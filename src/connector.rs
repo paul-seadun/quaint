@@ -24,21 +24,16 @@ pub(crate) mod mysql;
 pub(crate) mod postgres;
 #[cfg(feature = "sqlite")]
 pub(crate) mod sqlite;
-#[cfg(feature = "sqlx")]
-pub(crate) mod sqlx_mysql;
 
-#[cfg(feature = "mysql")]
-pub use self::mysql::*;
 #[cfg(feature = "postgresql")]
 pub use self::postgres::*;
 pub use self::result_set::*;
 pub use connection_info::*;
 #[cfg(feature = "mssql")]
 pub use mssql::*;
+#[cfg(feature = "mysql")]
+pub use mysql::*;
 pub use queryable::*;
 #[cfg(feature = "sqlite")]
 pub use sqlite::*;
-#[cfg(feature = "sqlx")]
-pub use sqlx_mysql::*;
 pub use transaction::*;
-pub(crate) use type_identifier::*;

@@ -1,4 +1,8 @@
+#![allow(dead_code)]
+
 //! Error module
+#[cfg(feature = "mysql")]
+use sqlx::mysql::MySqlDatabaseError;
 use std::{borrow::Cow, fmt, io, num};
 use thiserror::Error;
 
@@ -245,5 +249,40 @@ impl From<io::Error> for Error {
 impl From<std::string::FromUtf8Error> for Error {
     fn from(_: std::string::FromUtf8Error) -> Error {
         Error::builder(ErrorKind::conversion("Couldn't convert data to UTF-8")).build()
+    }
+}
+
+#[cfg(any(feature = "mysql", feature = "postgresql", feature = "sqlite"))]
+impl From<sqlx::Error> for Error {
+    fn from(e: sqlx::Error) -> Self {
+        match e {
+            sqlx::Error::Io(io_error) => Error::builder(ErrorKind::ConnectionError(io_error.into())).build(),
+            sqlx::Error::ParseConnectOptions(_) => Error::builder(ErrorKind::InvalidConnectionArguments).build(),
+            sqlx::Error::Tls(e) => Error::builder(ErrorKind::TlsError { message: e.to_string() }).build(),
+
+            sqlx::Error::Protocol(s) => {
+                let io_error = io::Error::new(io::ErrorKind::BrokenPipe, s);
+                Error::builder(ErrorKind::IoError(io_error)).build()
+            }
+
+            sqlx::Error::ColumnDecode { index, source } => {
+                let kind = ErrorKind::conversion(format!("Couldn't decode column with index {}: {}", index, source));
+
+                Error::builder(kind).build()
+            }
+
+            sqlx::Error::Decode(e) => {
+                let kind = ErrorKind::conversion(e.to_string());
+                Error::builder(kind).build()
+            }
+
+            #[cfg(feature = "mysql")]
+            sqlx::Error::Database(e) if e.try_downcast_ref::<MySqlDatabaseError>().is_some() => {
+                let mysql_error = e.try_downcast::<MySqlDatabaseError>().unwrap();
+                Error::from(*mysql_error)
+            }
+
+            e => Error::builder(ErrorKind::QueryError(e.into())).build(),
+        }
     }
 }

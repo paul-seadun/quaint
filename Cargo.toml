@@ -22,7 +22,7 @@ documentation = "https://docs.rs/quaint/"
 features = [ "full", "serde-support", "json-1", "uuid-0_8", "chrono-0_4", "array" ]
 
 [features]
-default = ["sqlx"]
+default = []
 
 full = ["pooled", "json-1", "postgresql", "uuid-0_8", "chrono-0_4", "mysql", "mssql"]
 full-postgresql = ["pooled", "postgresql", "json-1", "uuid-0_8", "chrono-0_4", "array"]
@@ -53,7 +53,7 @@ pooled = ["mobc"]
 json-1 = ["serde_json", "base64"]
 uuid-0_8 = ["uuid"]
 chrono-0_4 = ["chrono"]
-mysql = ["mysql_async", "tokio"]
+mysql = ["sqlx/mysql", "tokio"]
 mssql = ["tiberius", "uuid-0_8", "chrono-0_4", "tokio-util"]
 tracing-log = ["tracing", "tracing-core"]
 array = []
@@ -70,8 +70,9 @@ futures = "0.3"
 thiserror = "1.0"
 async-trait = "0.1"
 hex = "0.4"
+bigdecimal = "0.1"
 
-sqlx = { git = "https://github.com/launchbadge/sqlx.git", default_features = false, features = ["all", "runtime-tokio"], optional = true}
+sqlx = { path = "../sqlx", default_features = false, features = ["all-types", "runtime-tokio"], optional = true}
 
 uuid = { version = "0.8", optional = true }
 chrono = { version = "0.4", optional = true }
