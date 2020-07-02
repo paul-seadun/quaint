@@ -1,5 +1,6 @@
 use crate::{
     ast::Value,
+    connector::bind::Bind,
     error::{Error, ErrorKind},
 };
 use chrono::{offset::Utc, DateTime, NaiveDate, NaiveTime};
@@ -36,12 +37,6 @@ pub(crate) enum MyValue<'a> {
     #[cfg(feature = "chrono-0_4")]
     /// A time value.
     Time(Option<chrono::NaiveTime>),
-}
-
-pub trait Bind<'a> {
-    fn bind_value(self, value: Value<'a>) -> crate::Result<Self>
-    where
-        Self: Sized;
 }
 
 impl<'a> Bind<'a> for Query<'a, MySql, MySqlArguments> {
@@ -140,6 +135,12 @@ pub fn map_row<'a>(row: MySqlRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
                 Value::Real(f_opt.map(|f| Decimal::from_f64(f).unwrap()))
             }
 
+            Some(ref ti) if <String as Type<MySql>>::compatible(ti) && ti.name() == "ENUM" => {
+                let string_opt: Option<String> = Decode::<MySql>::decode(value_ref).map_err(decode_err)?;
+
+                Value::Enum(string_opt.map(Cow::from))
+            }
+
             Some(ref ti) if <String as Type<MySql>>::compatible(ti) => {
                 let string_opt: Option<String> = Decode::<MySql>::decode(value_ref).map_err(decode_err)?;
 
@@ -186,7 +187,6 @@ pub fn map_row<'a>(row: MySqlRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
                 Value::Json(json_opt)
             }
 
-            // enum?
             Some(ref ti) => {
                 let msg = format!("Type {} is not yet supported in the MySQL connector.", ti.name());
                 let kind = ErrorKind::conversion(msg.clone());

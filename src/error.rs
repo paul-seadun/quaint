@@ -3,6 +3,8 @@
 //! Error module
 #[cfg(feature = "mysql")]
 use sqlx::mysql::MySqlDatabaseError;
+#[cfg(feature = "sqlite")]
+use sqlx::sqlite::SqliteError;
 use std::{borrow::Cow, fmt, io, num};
 use thiserror::Error;
 
@@ -279,6 +281,12 @@ impl From<sqlx::Error> for Error {
             #[cfg(feature = "mysql")]
             sqlx::Error::Database(e) if e.try_downcast_ref::<MySqlDatabaseError>().is_some() => {
                 let mysql_error = e.try_downcast::<MySqlDatabaseError>().unwrap();
+                Error::from(*mysql_error)
+            }
+
+            #[cfg(feature = "sqlite")]
+            sqlx::Error::Database(e) if e.try_downcast_ref::<SqliteError>().is_some() => {
+                let mysql_error = e.try_downcast::<SqliteError>().unwrap();
                 Error::from(*mysql_error)
             }
 

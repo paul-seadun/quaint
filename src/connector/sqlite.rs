@@ -1,156 +1,90 @@
+mod config;
 mod conversion;
 mod error;
 
 use crate::{
     ast::{Query, Value},
-    connector::{metrics, queryable::*, ResultSet},
-    error::{Error, ErrorKind},
+    connector::{bind::Bind, metrics, queryable::*, ResultSet},
+    error::Error,
     visitor::{self, Visitor},
 };
 use async_trait::async_trait;
-use rusqlite::NO_PARAMS;
-use std::{collections::HashSet, convert::TryFrom, path::Path, time::Duration};
-use tokio::sync::Mutex;
-
-const DEFAULT_SCHEMA_NAME: &str = "quaint";
+pub use config::*;
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteRow},
+    Connect, Executor, Row as _, SqliteConnection,
+};
+use std::{collections::HashSet, convert::TryFrom, future::Future, time::Duration};
+use tokio::{sync::Mutex, time::timeout};
 
 /// A connector interface for the SQLite database
 pub struct Sqlite {
-    pub(crate) client: Mutex<rusqlite::Connection>,
+    pub(crate) connection: Mutex<SqliteConnection>,
     /// This is not a `PathBuf` because we need to `ATTACH` the database to the path, and this can
     /// only be done with UTF-8 paths.
     pub(crate) file_path: String,
-}
-
-pub struct SqliteParams {
-    pub connection_limit: Option<usize>,
-    /// This is not a `PathBuf` because we need to `ATTACH` the database to the path, and this can
-    /// only be done with UTF-8 paths.
-    pub file_path: String,
-    pub db_name: String,
-    pub socket_timeout: Option<Duration>,
-}
-
-type ConnectionParams = (Vec<(String, String)>, Vec<(String, String)>);
-
-impl TryFrom<&str> for SqliteParams {
-    type Error = Error;
-
-    fn try_from(path: &str) -> crate::Result<Self> {
-        let path = if path.starts_with("file:") {
-            path.trim_start_matches("file:")
-        } else {
-            path.trim_start_matches("sqlite:")
-        };
-
-        let path_parts: Vec<&str> = path.split('?').collect();
-        let path_str = path_parts[0];
-        let path = Path::new(path_str);
-
-        if path.is_dir() {
-            Err(Error::builder(ErrorKind::DatabaseUrlIsInvalid(path.to_str().unwrap().to_string())).build())
-        } else {
-            let official = vec![];
-            let mut connection_limit = None;
-            let mut db_name = None;
-            let mut socket_timeout = None;
-
-            if path_parts.len() > 1 {
-                let (_, unsupported): ConnectionParams = path_parts
-                    .last()
-                    .unwrap()
-                    .split('&')
-                    .map(|kv| {
-                        let splitted: Vec<&str> = kv.split('=').collect();
-                        (String::from(splitted[0]), String::from(splitted[1]))
-                    })
-                    .collect::<Vec<(String, String)>>()
-                    .into_iter()
-                    .partition(|(k, _)| official.contains(&k.as_str()));
-
-                for (k, v) in unsupported.into_iter() {
-                    match k.as_ref() {
-                        "connection_limit" => {
-                            let as_int: usize = v
-                                .parse()
-                                .map_err(|_| Error::builder(ErrorKind::InvalidConnectionArguments).build())?;
-
-                            connection_limit = Some(as_int);
-                        }
-                        "db_name" => {
-                            db_name = Some(v.to_string());
-                        }
-                        "socket_timeout" => {
-                            let as_int = v
-                                .parse()
-                                .map_err(|_| Error::builder(ErrorKind::InvalidConnectionArguments).build())?;
-
-                            socket_timeout = Some(Duration::from_secs(as_int));
-                        }
-                        _ => {
-                            #[cfg(not(feature = "tracing-log"))]
-                            trace!("Discarding connection string param: {}", k);
-                            #[cfg(feature = "tracing-log")]
-                            tracing::trace!(message = "Discarding connection string param", param = k.as_str());
-                        }
-                    };
-                }
-            }
-
-            Ok(Self {
-                connection_limit,
-                file_path: path_str.to_owned(),
-                db_name: db_name.unwrap_or_else(|| DEFAULT_SCHEMA_NAME.to_owned()),
-                socket_timeout,
-            })
-        }
-    }
-}
-
-impl TryFrom<&str> for Sqlite {
-    type Error = Error;
-
-    fn try_from(path: &str) -> crate::Result<Self> {
-        let params = SqliteParams::try_from(path)?;
-
-        let conn = rusqlite::Connection::open_in_memory()?;
-
-        if let Some(timeout) = params.socket_timeout {
-            conn.busy_timeout(timeout)?;
-        };
-
-        let client = Mutex::new(conn);
-        let file_path = params.file_path;
-
-        Ok(Sqlite { client, file_path })
-    }
+    pub(crate) socket_timeout: Option<Duration>,
 }
 
 impl Sqlite {
-    pub fn new(file_path: &str) -> crate::Result<Sqlite> {
-        Self::try_from(file_path)
+    pub async fn new(file_path: &str) -> crate::Result<Sqlite> {
+        let params = SqliteParams::try_from(file_path)?;
+        let opts = SqliteConnectOptions::new().statement_cache_capacity(params.statement_cache_size);
+        let conn = SqliteConnection::connect_with(&opts).await?;
+
+        let connection = Mutex::new(conn);
+        let file_path = params.file_path;
+        let socket_timeout = params.socket_timeout;
+
+        Ok(Sqlite {
+            connection,
+            file_path,
+            socket_timeout,
+        })
     }
 
     pub async fn attach_database(&mut self, db_name: &str) -> crate::Result<()> {
-        let client = self.client.lock().await;
-        let mut stmt = client.prepare("PRAGMA database_list")?;
+        let mut conn = self.connection.lock().await;
 
-        let databases: HashSet<String> = stmt
-            .query_map(NO_PARAMS, |row| {
-                let name: String = row.get(1)?;
-
+        let databases: HashSet<String> = sqlx::query("PRAGMA database_list")
+            .try_map(|row: SqliteRow| {
+                let name: String = row.try_get(1)?;
                 Ok(name)
-            })?
-            .map(|res| res.unwrap())
+            })
+            .fetch_all(&mut *conn)
+            .await?
+            .into_iter()
             .collect();
 
         if !databases.contains(db_name) {
-            rusqlite::Connection::execute(&client, "ATTACH DATABASE ? AS ?", &[self.file_path.as_str(), db_name])?;
+            sqlx::query("ATTACH DATABASE ? AS ?")
+                .bind(self.file_path.as_str())
+                .bind(db_name)
+                .execute(&mut *conn)
+                .await?;
         }
 
-        rusqlite::Connection::execute(&client, "PRAGMA foreign_keys = ON", NO_PARAMS)?;
+        sqlx::query("PRAGMA foreign_keys = ON").execute(&mut *conn).await?;
 
         Ok(())
+    }
+
+    async fn timeout<T, F, E>(&self, f: F) -> crate::Result<T>
+    where
+        F: Future<Output = std::result::Result<T, E>>,
+        E: Into<Error>,
+    {
+        match self.socket_timeout {
+            Some(duration) => match timeout(duration, f).await {
+                Ok(Ok(result)) => Ok(result),
+                Ok(Err(err)) => Err(err.into()),
+                Err(to) => Err(to.into()),
+            },
+            None => match f.await {
+                Ok(result) => Ok(result),
+                Err(err) => Err(err.into()),
+            },
+        }
     }
 }
 
@@ -160,56 +94,78 @@ impl TransactionCapable for Sqlite {}
 impl Queryable for Sqlite {
     async fn query(&self, q: Query<'_>) -> crate::Result<ResultSet> {
         let (sql, params) = visitor::Sqlite::build(q)?;
-        self.query_raw(&sql, &params).await
+        self.query_raw_new(&sql, params).await
     }
 
     async fn execute(&self, q: Query<'_>) -> crate::Result<u64> {
         let (sql, params) = visitor::Sqlite::build(q)?;
-        self.execute_raw(&sql, &params).await
+        self.execute_raw_new(&sql, params).await
     }
 
-    async fn query_raw(&self, sql: &str, params: &[Value<'_>]) -> crate::Result<ResultSet> {
-        metrics::query("sqlite.query_raw", sql, params, move || async move {
-            let client = self.client.lock().await;
+    async fn query_raw(&self, _: &str, _: &[Value<'_>]) -> crate::Result<ResultSet> {
+        todo!()
+    }
 
-            let mut stmt = client.prepare_cached(sql)?;
+    async fn query_raw_new(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<ResultSet> {
+        metrics::query_new("sqlite.query_raw", sql, params, move |params| async move {
+            let mut query = sqlx::query(sql);
 
-            let mut rows = stmt.query(params)?;
-            let mut result = ResultSet::new(rows.to_column_names(), Vec::new());
-
-            while let Some(row) = rows.next()? {
-                result.rows.push(row.get_result_row()?);
+            for param in params.into_iter() {
+                query = query.bind_value(param)?;
             }
 
-            result.set_last_insert_id(u64::try_from(client.last_insert_rowid()).unwrap_or(0));
+            let mut conn = self.connection.lock().await;
+            let describe = self.timeout(conn.describe(sql)).await?;
+            let columns = describe.columns.into_iter().map(|c| c.name).collect();
 
-            Ok(result)
+            let rows = query
+                .try_map(|row| conversion::map_row(row))
+                .fetch_all(&mut *conn)
+                .await?;
+
+            Ok(ResultSet::new(columns, rows))
         })
         .await
     }
 
-    async fn execute_raw(&self, sql: &str, params: &[Value<'_>]) -> crate::Result<u64> {
-        metrics::query("sqlite.query_raw", sql, params, move || async move {
-            let client = self.client.lock().await;
-            let mut stmt = client.prepare_cached(sql)?;
-            let res = u64::try_from(stmt.execute(params)?)?;
+    async fn execute_raw_new(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<u64> {
+        metrics::query_new("sqlite.execute_raw", sql, params, |params| async move {
+            let mut query = sqlx::query(sql);
 
-            Ok(res)
+            for param in params.into_iter() {
+                query = query.bind_value(param)?;
+            }
+
+            let mut conn = self.connection.lock().await;
+            let changes = query.execute(&mut *conn).await?;
+
+            Ok(changes)
         })
         .await
+    }
+
+    async fn execute_raw(&self, _: &str, _: &[Value<'_>]) -> crate::Result<u64> {
+        todo!()
     }
 
     async fn raw_cmd(&self, cmd: &str) -> crate::Result<()> {
-        metrics::query("sqlite.raw_cmd", cmd, &[], move || async move {
-            let client = self.client.lock().await;
-            client.execute_batch(cmd)?;
+        metrics::query_new("sqlite.raw_cmd", cmd, Vec::new(), move |_| async move {
+            let mut conn = self.connection.lock().await;
+            sqlx::query(cmd).execute(&mut *conn).await?;
             Ok(())
         })
         .await
     }
 
     async fn version(&self) -> crate::Result<Option<String>> {
-        Ok(Some(rusqlite::version().into()))
+        let query = r#"SELECT sqlite_version() version;"#;
+        let rows = self.query_raw_new(query, vec![]).await?;
+
+        let version_string = rows
+            .get(0)
+            .and_then(|row| row.get("version").and_then(|version| version.to_string()));
+
+        Ok(version_string)
     }
 }
 
@@ -246,26 +202,29 @@ mod tests {
         assert_eq!(params.file_path, "dev.db");
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn should_provide_a_database_connection() {
-        let connection = Sqlite::new("db/test.db").unwrap();
-        let res = connection.query_raw("SELECT * FROM sqlite_master", &[]).await.unwrap();
+        let connection = Sqlite::new("db/test.db").await.unwrap();
+        let res = connection
+            .query_raw_new("SELECT * FROM sqlite_master", vec![])
+            .await
+            .unwrap();
 
         assert!(res.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn should_provide_a_database_transaction() {
-        let connection = Sqlite::new("db/test.db").unwrap();
+        let connection = Sqlite::new("db/test.db").await.unwrap();
         let tx = connection.start_transaction().await.unwrap();
-        let res = tx.query_raw("SELECT * FROM sqlite_master", &[]).await.unwrap();
+        let res = tx.query_raw_new("SELECT * FROM sqlite_master", vec![]).await.unwrap();
 
         assert!(res.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn test_aliased_value() {
-        let conn = Sqlite::new("db/test.db").unwrap();
+        let conn = Sqlite::new("db/test.db").await.unwrap();
         let query = Select::default().value(val!(1).alias("test"));
         let rows = conn.select(query).await.unwrap();
         let row = rows.get(0).unwrap();
@@ -273,9 +232,9 @@ mod tests {
         assert_eq!(Value::integer(1), row["test"]);
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn test_aliased_null() {
-        let conn = Sqlite::new("db/test.db").unwrap();
+        let conn = Sqlite::new("db/test.db").await.unwrap();
         let query = Select::default().value(val!(Option::<i64>::None).alias("test"));
         let rows = conn.select(query).await.unwrap();
         let row = rows.get(0).unwrap();
@@ -283,7 +242,7 @@ mod tests {
         assert!(row["test"].is_null());
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn tuples_in_selection() {
         let table = r#"
             CREATE TABLE tuples (id SERIAL PRIMARY KEY, age INTEGER NOT NULL, length REAL NOT NULL);
@@ -291,8 +250,8 @@ mod tests {
 
         let connection = Quaint::new("file:db/test.db").await.unwrap();
 
-        connection.query_raw("DROP TABLE IF EXISTS tuples", &[]).await.unwrap();
-        connection.query_raw(table, &[]).await.unwrap();
+        connection.raw_cmd("DROP TABLE IF EXISTS tuples").await.unwrap();
+        connection.raw_cmd(table).await.unwrap();
 
         let insert = Insert::multi_into("tuples", vec!["age", "length"])
             .values(vec![val!(35), val!(20.0)])
@@ -346,16 +305,16 @@ mod tests {
     VALUES (1, 'Joe', 27, 20000.00 );
     "#;
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn should_map_columns_correctly() {
-        let connection = Sqlite::try_from("file:db/test.db").unwrap();
+        let connection = Sqlite::new("file:db/test.db").await.unwrap();
 
-        connection.query_raw(TABLE_DEF, &[]).await.unwrap();
+        connection.raw_cmd(TABLE_DEF).await.unwrap();
 
-        let changes = connection.execute_raw(CREATE_USER, &[]).await.unwrap();
+        let changes = connection.execute_raw_new(CREATE_USER, vec![]).await.unwrap();
         assert_eq!(1, changes);
 
-        let rows = connection.query_raw("SELECT * FROM USER", &[]).await.unwrap();
+        let rows = connection.query_raw_new("SELECT * FROM USER", vec![]).await.unwrap();
         assert_eq!(rows.len(), 1);
 
         let row = rows.get(0).unwrap();
@@ -365,9 +324,9 @@ mod tests {
         assert_eq!(row["SALARY"].as_f64(), Some(20000.0));
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn op_test_add_one_level() {
-        let connection = Sqlite::try_from("file:db/test.db").unwrap();
+        let connection = Sqlite::new("file:db/test.db").await.unwrap();
         let q = Select::default().value(val!(2) + val!(1));
 
         let rows = connection.select(q).await.unwrap();
@@ -376,9 +335,9 @@ mod tests {
         assert_eq!(row[0].as_i64(), Some(3));
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn op_test_add_two_levels() {
-        let connection = Sqlite::try_from("file:db/test.db").unwrap();
+        let connection = Sqlite::new("file:db/test.db").await.unwrap();
         let q = Select::default().value(val!(2) + val!(val!(3) + val!(2)));
 
         let rows = connection.select(q).await.unwrap();
@@ -387,9 +346,9 @@ mod tests {
         assert_eq!(row[0].as_i64(), Some(7));
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn op_test_sub_one_level() {
-        let connection = Sqlite::try_from("file:db/test.db").unwrap();
+        let connection = Sqlite::new("file:db/test.db").await.unwrap();
         let q = Select::default().value(val!(2) - val!(1));
 
         let rows = connection.select(q).await.unwrap();
@@ -398,9 +357,9 @@ mod tests {
         assert_eq!(row[0].as_i64(), Some(1));
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn op_test_sub_three_items() {
-        let connection = Sqlite::try_from("file:db/test.db").unwrap();
+        let connection = Sqlite::new("file:db/test.db").await.unwrap();
         let q = Select::default().value(val!(2) - val!(1) - val!(1));
 
         let rows = connection.select(q).await.unwrap();
@@ -409,9 +368,9 @@ mod tests {
         assert_eq!(row[0].as_i64(), Some(0));
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn op_test_sub_two_levels() {
-        let connection = Sqlite::try_from("file:db/test.db").unwrap();
+        let connection = Sqlite::new("file:db/test.db").await.unwrap();
         let q = Select::default().value(val!(2) - val!(val!(3) + val!(1)));
 
         let rows = connection.select(q).await.unwrap();
@@ -420,9 +379,9 @@ mod tests {
         assert_eq!(row[0].as_i64(), Some(-2));
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn op_test_mul_one_level() {
-        let connection = Sqlite::try_from("file:db/test.db").unwrap();
+        let connection = Sqlite::new("file:db/test.db").await.unwrap();
         let q = Select::default().value(val!(6) * val!(6));
 
         let rows = connection.select(q).await.unwrap();
@@ -431,9 +390,9 @@ mod tests {
         assert_eq!(row[0].as_i64(), Some(36));
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn op_test_mul_two_levels() {
-        let connection = Sqlite::try_from("file:db/test.db").unwrap();
+        let connection = Sqlite::new("file:db/test.db").await.unwrap();
         let q = Select::default().value(val!(6) * (val!(6) - val!(1)));
 
         let rows = connection.select(q).await.unwrap();
@@ -442,9 +401,9 @@ mod tests {
         assert_eq!(row[0].as_i64(), Some(30));
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn op_multiple_operations() {
-        let connection = Sqlite::try_from("file:db/test.db").unwrap();
+        let connection = Sqlite::new("file:db/test.db").await.unwrap();
         let q = Select::default().value(val!(4) - val!(2) * val!(2));
 
         let rows = connection.select(q).await.unwrap();
@@ -453,9 +412,9 @@ mod tests {
         assert_eq!(row[0].as_i64(), Some(0));
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn op_test_div_one_level() {
-        let connection = Sqlite::try_from("file:db/test.db").unwrap();
+        let connection = Sqlite::new("file:db/test.db").await.unwrap();
         let q = Select::default().value(val!(6) / val!(3));
 
         let rows = connection.select(q).await.unwrap();
@@ -464,9 +423,9 @@ mod tests {
         assert_eq!(row[0].as_i64(), Some(2));
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn test_uniq_constraint_violation() {
-        let conn = Sqlite::try_from("file:db/test.db").unwrap();
+        let conn = Sqlite::new("file:db/test.db").await.unwrap();
 
         let _ = conn.raw_cmd("DROP TABLE test_uniq_constraint_violation").await;
 
@@ -477,18 +436,12 @@ mod tests {
             .await
             .unwrap();
 
-        conn.query_raw(
-            "INSERT INTO test_uniq_constraint_violation (id1, id2) VALUES (1, 2)",
-            &[],
-        )
-        .await
-        .unwrap();
+        conn.raw_cmd("INSERT INTO test_uniq_constraint_violation (id1, id2) VALUES (1, 2)")
+            .await
+            .unwrap();
 
         let res = conn
-            .query_raw(
-                "INSERT INTO test_uniq_constraint_violation (id1, id2) VALUES (1, 2)",
-                &[],
-            )
+            .raw_cmd("INSERT INTO test_uniq_constraint_violation (id1, id2) VALUES (1, 2)")
             .await;
 
         let err = res.unwrap_err();
@@ -507,9 +460,9 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn test_null_constraint_violation() {
-        let conn = Sqlite::try_from("file:db/test.db").unwrap();
+        let conn = Sqlite::new("file:db/test.db").await.unwrap();
 
         let _ = conn.raw_cmd("DROP TABLE test_null_constraint_violation").await;
 
@@ -518,12 +471,12 @@ mod tests {
             .unwrap();
 
         let res = conn
-            .query_raw("INSERT INTO test_null_constraint_violation DEFAULT VALUES", &[])
+            .query_raw_new("INSERT INTO test_null_constraint_violation DEFAULT VALUES", vec![])
             .await;
 
         let err = res.unwrap_err();
 
-        match err.kind() {
+        match dbg!(err.kind()) {
             ErrorKind::NullConstraintViolation { constraint } => {
                 assert_eq!(Some("1299"), err.original_code());
                 assert_eq!(

@@ -9,6 +9,7 @@
 //! implement the [Queryable](trait.Queryable.html) trait for generalized
 //! querying interface.
 
+mod bind;
 mod connection_info;
 pub(crate) mod metrics;
 mod queryable;

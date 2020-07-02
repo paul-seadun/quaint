@@ -7,14 +7,13 @@ mod error;
 pub use config::*;
 
 use async_trait::async_trait;
-use conversion::Bind;
 use sqlx::{Connect, Executor, MySqlConnection};
 use std::{future::Future, time::Duration};
 use tokio::{sync::Mutex, time::timeout};
 
 use crate::{
     ast::{Query, Value},
-    connector::{metrics, queryable::*, ResultSet},
+    connector::{bind::Bind, metrics, queryable::*, ResultSet},
     error::Error,
     visitor::{self, Visitor},
 };
@@ -86,12 +85,12 @@ impl Queryable for Mysql {
             let mut conn = self.connection.lock().await;
             let describe = self.timeout(conn.describe(sql)).await?;
 
-            let columns = describe.columns;
             let rows = query
                 .try_map(|row| conversion::map_row(row))
                 .fetch_all(&mut *conn)
                 .await?;
-            let columns: Vec<String> = columns.into_iter().map(|c| c.name).collect();
+
+            let columns: Vec<String> = describe.columns.into_iter().map(|c| c.name).collect();
 
             Ok(ResultSet::new(columns, rows))
         })

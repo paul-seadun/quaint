@@ -82,7 +82,7 @@ impl Manager for QuaintManager {
             QuaintManager::Sqlite { file_path, db_name } => {
                 use crate::connector::Sqlite;
 
-                let mut conn = Sqlite::new(&file_path)?;
+                let mut conn = Sqlite::new(&file_path).await?;
                 conn.attach_database(db_name).await?;
 
                 Ok(Box::new(conn) as Self::Connection)
