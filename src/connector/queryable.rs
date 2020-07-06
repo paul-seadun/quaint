@@ -21,22 +21,14 @@ pub trait Queryable: Send + Sync {
     async fn query(&self, q: Query<'_>) -> crate::Result<ResultSet>;
 
     /// Execute a query given as SQL, interpolating the given parameters.
-    async fn query_raw(&self, sql: &str, params: &[Value<'_>]) -> crate::Result<ResultSet>;
-
-    async fn query_raw_new(&self, _sql: &str, _params: Vec<Value<'_>>) -> crate::Result<ResultSet> {
-        todo!()
-    }
+    async fn query_raw(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<ResultSet>;
 
     /// Execute the given query, returning the number of affected rows.
     async fn execute(&self, q: Query<'_>) -> crate::Result<u64>;
 
     /// Execute a query given as SQL, interpolating the given parameters and
     /// returning the number of affected rows.
-    async fn execute_raw(&self, sql: &str, params: &[Value<'_>]) -> crate::Result<u64>;
-
-    async fn execute_raw_new(&self, _sql: &str, _params: Vec<Value<'_>>) -> crate::Result<u64> {
-        todo!()
-    }
+    async fn execute_raw(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<u64>;
 
     /// Run a command in the database, for queries that can't be run using
     /// prepared statements.

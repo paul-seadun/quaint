@@ -105,89 +105,89 @@ pub fn map_row<'a>(row: MySqlRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
         };
 
         let value = match value_ref.type_info() {
-            Some(ref ti) if <i64 as Type<MySql>>::compatible(ti) => {
+            ti if <i64 as Type<MySql>>::compatible(ti) => {
                 let int_opt = Decode::<MySql>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Integer(int_opt)
             }
 
-            Some(ref ti) if <u64 as Type<MySql>>::compatible(ti) => {
+            ti if <u64 as Type<MySql>>::compatible(ti) => {
                 let uint_opt: Option<u64> = Decode::<MySql>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Integer(uint_opt.map(|u| u as i64))
             }
 
-            Some(ref ti) if <Decimal as Type<MySql>>::compatible(ti) => {
+            ti if <Decimal as Type<MySql>>::compatible(ti) => {
                 let decimal_opt = Decode::<MySql>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Real(decimal_opt)
             }
 
-            Some(ref ti) if <f32 as Type<MySql>>::compatible(ti) => {
+            ti if <f32 as Type<MySql>>::compatible(ti) => {
                 let f_opt: Option<f32> = Decode::<MySql>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Real(f_opt.map(|f| Decimal::from_f32(f).unwrap()))
             }
 
-            Some(ref ti) if <f64 as Type<MySql>>::compatible(ti) => {
+            ti if <f64 as Type<MySql>>::compatible(ti) => {
                 let f_opt: Option<f64> = Decode::<MySql>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Real(f_opt.map(|f| Decimal::from_f64(f).unwrap()))
             }
 
-            Some(ref ti) if <String as Type<MySql>>::compatible(ti) && ti.name() == "ENUM" => {
+            ti if <String as Type<MySql>>::compatible(ti) && ti.name() == "ENUM" => {
                 let string_opt: Option<String> = Decode::<MySql>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Enum(string_opt.map(Cow::from))
             }
 
-            Some(ref ti) if <String as Type<MySql>>::compatible(ti) => {
+            ti if <String as Type<MySql>>::compatible(ti) => {
                 let string_opt: Option<String> = Decode::<MySql>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Text(string_opt.map(Cow::from))
             }
 
-            Some(ref ti) if <Vec<u8> as Type<MySql>>::compatible(ti) => {
+            ti if <Vec<u8> as Type<MySql>>::compatible(ti) => {
                 let bytes_opt: Option<Vec<u8>> = Decode::<MySql>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Bytes(bytes_opt.map(Cow::from))
             }
 
-            Some(ref ti) if <bool as Type<MySql>>::compatible(ti) => {
+            ti if <bool as Type<MySql>>::compatible(ti) => {
                 let bool_opt = Decode::<MySql>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Boolean(bool_opt)
             }
 
             #[cfg(feature = "chrono-0_4")]
-            Some(ref ti) if <DateTime<Utc> as Type<MySql>>::compatible(ti) => {
+            ti if <DateTime<Utc> as Type<MySql>>::compatible(ti) => {
                 let dt_opt = Decode::<MySql>::decode(value_ref).map_err(decode_err)?;
 
                 Value::DateTime(dt_opt)
             }
 
             #[cfg(feature = "chrono-0_4")]
-            Some(ref ti) if <NaiveDate as Type<MySql>>::compatible(ti) => {
+            ti if <NaiveDate as Type<MySql>>::compatible(ti) => {
                 let date_opt = Decode::<MySql>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Date(date_opt)
             }
 
             #[cfg(feature = "chrono-0_4")]
-            Some(ref ti) if <NaiveTime as Type<MySql>>::compatible(ti) => {
+            ti if <NaiveTime as Type<MySql>>::compatible(ti) => {
                 let time_opt = Decode::<MySql>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Time(time_opt)
             }
 
             #[cfg(feature = "json-1")]
-            Some(ref ti) if <serde_json::Value as Type<MySql>>::compatible(ti) => {
+            ti if <serde_json::Value as Type<MySql>>::compatible(ti) => {
                 let json_opt = Decode::<MySql>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Json(json_opt)
             }
 
-            Some(ref ti) => {
+            ti => {
                 let msg = format!("Type {} is not yet supported in the MySQL connector.", ti.name());
                 let kind = ErrorKind::conversion(msg.clone());
 
@@ -201,7 +201,6 @@ pub fn map_row<'a>(row: MySqlRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
 
                 Err(error)?
             }
-            None => Value::Integer(None),
         };
 
         result.push(value);

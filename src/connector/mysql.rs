@@ -7,7 +7,8 @@ mod error;
 pub use config::*;
 
 use async_trait::async_trait;
-use sqlx::{Connect, Executor, MySqlConnection};
+use futures::TryStreamExt;
+use sqlx::{Column, Connect, MySqlConnection, Row};
 use std::{future::Future, time::Duration};
 use tokio::{sync::Mutex, time::timeout};
 
@@ -66,15 +67,15 @@ impl TransactionCapable for Mysql {}
 impl Queryable for Mysql {
     async fn query(&self, q: Query<'_>) -> crate::Result<ResultSet> {
         let (sql, params) = visitor::Mysql::build(q)?;
-        self.query_raw_new(&sql, params).await
+        self.query_raw(&sql, params).await
     }
 
     async fn execute(&self, q: Query<'_>) -> crate::Result<u64> {
         let (sql, params) = visitor::Mysql::build(q)?;
-        self.execute_raw_new(&sql, params).await
+        self.execute_raw(&sql, params).await
     }
 
-    async fn query_raw_new(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<ResultSet> {
+    async fn query_raw(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<ResultSet> {
         metrics::query_new("mysql.query_raw", sql, params, |params| async move {
             let mut query = sqlx::query(sql);
 
@@ -83,29 +84,30 @@ impl Queryable for Mysql {
             }
 
             let mut conn = self.connection.lock().await;
-            let describe = self.timeout(conn.describe(sql)).await?;
+            let mut columns = Vec::new();
+            let mut rows = Vec::new();
 
-            let rows = query
-                .try_map(|row| conversion::map_row(row))
-                .fetch_all(&mut *conn)
-                .await?;
+            self.timeout(async {
+                let mut stream = query.fetch(&mut *conn);
 
-            let columns: Vec<String> = describe.columns.into_iter().map(|c| c.name).collect();
+                while let Some(row) = stream.try_next().await? {
+                    if columns.is_empty() {
+                        columns = row.columns().iter().map(|c| c.name().to_string()).collect();
+                    }
+
+                    rows.push(conversion::map_row(row)?);
+                }
+
+                Ok::<(), Error>(())
+            })
+            .await?;
 
             Ok(ResultSet::new(columns, rows))
         })
         .await
     }
 
-    async fn query_raw(&self, _: &str, _: &[Value<'_>]) -> crate::Result<ResultSet> {
-        todo!()
-    }
-
-    async fn execute_raw(&self, _: &str, _: &[Value<'_>]) -> crate::Result<u64> {
-        todo!()
-    }
-
-    async fn execute_raw_new(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<u64> {
+    async fn execute_raw(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<u64> {
         metrics::query_new("mysql.execute_raw", sql, params, |params| async move {
             let mut query = sqlx::query(sql);
 
@@ -114,7 +116,7 @@ impl Queryable for Mysql {
             }
 
             let mut conn = self.connection.lock().await;
-            let changes = query.execute(&mut *conn).await?;
+            let changes = self.timeout(query.execute(&mut *conn)).await?;
 
             Ok(changes)
         })
@@ -124,7 +126,7 @@ impl Queryable for Mysql {
     async fn raw_cmd(&self, cmd: &str) -> crate::Result<()> {
         metrics::query_new("mysql.raw_cmd", cmd, Vec::new(), move |_| async move {
             let mut conn = self.connection.lock().await;
-            sqlx::query(cmd).execute(&mut *conn).await?;
+            self.timeout(sqlx::query(cmd).execute(&mut *conn)).await?;
             Ok(())
         })
         .await
@@ -132,7 +134,7 @@ impl Queryable for Mysql {
 
     async fn version(&self) -> crate::Result<Option<String>> {
         let query = r#"SELECT @@GLOBAL.version version"#;
-        let rows = self.query_raw(query, &[]).await?;
+        let rows = self.query_raw(query, vec![]).await?;
 
         let version_string = rows
             .get(0)
@@ -165,7 +167,7 @@ mod tests {
         let connection = Quaint::new(&CONN_STR).await.unwrap();
 
         let res = connection
-            .query_raw_new(
+            .query_raw(
                 "select * from information_schema.`COLUMNS` where COLUMN_NAME = 'unknown_123'",
                 vec![],
             )
@@ -195,13 +197,13 @@ VALUES (1, 'Joe', 27, 20000.00 );
     async fn should_map_columns_correctly() {
         let connection = Quaint::new(&CONN_STR).await.unwrap();
 
-        connection.query_raw_new(DROP_TABLE, vec![]).await.unwrap();
-        connection.query_raw_new(TABLE_DEF, vec![]).await.unwrap();
+        connection.query_raw(DROP_TABLE, vec![]).await.unwrap();
+        connection.query_raw(TABLE_DEF, vec![]).await.unwrap();
 
-        let ch_ch_ch_ch_changees = connection.execute_raw_new(CREATE_USER, vec![]).await.unwrap();
+        let ch_ch_ch_ch_changees = connection.execute_raw(CREATE_USER, vec![]).await.unwrap();
         assert_eq!(1, ch_ch_ch_ch_changees);
 
-        let rows = connection.query_raw_new("SELECT * FROM `user`", vec![]).await.unwrap();
+        let rows = connection.query_raw("SELECT * FROM `user`", vec![]).await.unwrap();
         assert_eq!(rows.len(), 1);
 
         let row = rows.get(0).unwrap();
@@ -221,10 +223,10 @@ VALUES (1, 'Joe', 27, 20000.00 );
         let connection = Quaint::new(&CONN_STR).await.unwrap();
 
         connection
-            .query_raw_new("DROP TABLE IF EXISTS tuples", vec![])
+            .query_raw("DROP TABLE IF EXISTS tuples", vec![])
             .await
             .unwrap();
-        connection.query_raw_new(table, vec![]).await.unwrap();
+        connection.query_raw(table, vec![]).await.unwrap();
 
         let insert = Insert::multi_into("tuples", vec!["age", "length"])
             .values(vec![val!(35), val!(20.0)])
@@ -268,12 +270,12 @@ VALUES (1, 'Joe', 27, 20000.00 );
         let blob: Vec<u8> = vec![4, 2, 0];
 
         connection
-            .query_raw_new("DROP TABLE IF EXISTS mysql_blobs_roundtrip_test", vec![])
+            .query_raw("DROP TABLE IF EXISTS mysql_blobs_roundtrip_test", vec![])
             .await
             .unwrap();
 
         connection
-            .query_raw_new(
+            .query_raw(
                 "CREATE TABLE mysql_blobs_roundtrip_test (id int AUTO_INCREMENT PRIMARY KEY, bytes MEDIUMBLOB)",
                 vec![],
             )
@@ -299,12 +301,12 @@ VALUES (1, 'Joe', 27, 20000.00 );
         let time = chrono::NaiveTime::from_hms_micro(14, 40, 22, 1);
 
         connection
-            .query_raw_new("DROP TABLE IF EXISTS quaint_mysql_time_test", vec![])
+            .query_raw("DROP TABLE IF EXISTS quaint_mysql_time_test", vec![])
             .await
             .unwrap();
 
         connection
-            .query_raw_new(
+            .query_raw(
                 "CREATE TABLE quaint_mysql_time_test (id INTEGER AUTO_INCREMENT PRIMARY KEY, value TIME)",
                 vec![],
             )
@@ -314,7 +316,7 @@ VALUES (1, 'Joe', 27, 20000.00 );
         let insert_raw = "INSERT INTO quaint_mysql_time_test (value) VALUES ('20:12:22')";
         let insert_parameterized = Insert::single_into("quaint_mysql_time_test").value("value", time);
 
-        connection.query_raw_new(insert_raw, vec![]).await.unwrap();
+        connection.query_raw(insert_raw, vec![]).await.unwrap();
         connection.query(insert_parameterized.into()).await.unwrap();
 
         let select = Select::from_table("quaint_mysql_time_test").value(asterisk());
@@ -338,12 +340,12 @@ VALUES (1, 'Joe', 27, 20000.00 );
         let datetime: chrono::DateTime<Utc> = "2003-03-01T13:10:35.789Z".parse().unwrap();
 
         connection
-            .query_raw_new("DROP TABLE IF EXISTS quaint_mysql_datetime_test", vec![])
+            .query_raw("DROP TABLE IF EXISTS quaint_mysql_datetime_test", vec![])
             .await
             .unwrap();
 
         connection
-            .query_raw_new(
+            .query_raw(
                 "CREATE TABLE quaint_mysql_datetime_test (id INTEGER AUTO_INCREMENT PRIMARY KEY, value DATETIME(3))",
                 vec![],
             )
@@ -353,7 +355,7 @@ VALUES (1, 'Joe', 27, 20000.00 );
         let insert_raw = "INSERT INTO quaint_mysql_datetime_test (value) VALUES ('2020-03-15T20:12:22.003')";
         let insert_parameterized = Insert::single_into("quaint_mysql_datetime_test").value("value", datetime);
 
-        connection.query_raw_new(insert_raw, vec![]).await.unwrap();
+        connection.query_raw(insert_raw, vec![]).await.unwrap();
         connection.query(insert_parameterized.into()).await.unwrap();
 
         let select = Select::from_table("quaint_mysql_datetime_test").value(asterisk());
@@ -406,7 +408,7 @@ VALUES (1, 'Joe', 27, 20000.00 );
             .unwrap();
         conn.raw_cmd("CREATE UNIQUE INDEX idx_uniq_constraint_violation ON test_uniq_constraint_violation (id1, id2) USING btree").await.unwrap();
 
-        conn.query_raw_new(
+        conn.query_raw(
             "INSERT INTO test_uniq_constraint_violation (id1, id2) VALUES (1, 2)",
             vec![],
         )
@@ -414,7 +416,7 @@ VALUES (1, 'Joe', 27, 20000.00 );
         .unwrap();
 
         let res = conn
-            .query_raw_new(
+            .query_raw(
                 "INSERT INTO test_uniq_constraint_violation (id1, id2) VALUES (1, 2)",
                 vec![],
             )
@@ -447,7 +449,7 @@ VALUES (1, 'Joe', 27, 20000.00 );
         // Error code 1364
         {
             let res = conn
-                .query_raw_new("INSERT INTO test_null_constraint_violation () VALUES ()", vec![])
+                .query_raw("INSERT INTO test_null_constraint_violation () VALUES ()", vec![])
                 .await;
 
             let err = res.unwrap_err();
@@ -467,7 +469,7 @@ VALUES (1, 'Joe', 27, 20000.00 );
 
         // Error code 1048
         {
-            conn.query_raw_new(
+            conn.query_raw(
                 "INSERT INTO test_null_constraint_violation (id1, id2) VALUES (50, 55)",
                 vec![],
             )
@@ -475,7 +477,7 @@ VALUES (1, 'Joe', 27, 20000.00 );
             .unwrap();
 
             let err = conn
-                .query_raw_new("UPDATE test_null_constraint_violation SET id2 = NULL", vec![])
+                .query_raw("UPDATE test_null_constraint_violation SET id2 = NULL", vec![])
                 .await
                 .unwrap_err();
 
@@ -495,7 +497,7 @@ VALUES (1, 'Joe', 27, 20000.00 );
 
         let conn = Quaint::new(&CONN_STR).await.unwrap();
 
-        conn.execute_raw_new("DROP TABLE IF EXISTS `encodings_test`", vec![])
+        conn.execute_raw("DROP TABLE IF EXISTS `encodings_test`", vec![])
             .await
             .unwrap();
 
@@ -506,14 +508,14 @@ VALUES (1, 'Joe', 27, 20000.00 );
             );
         "#;
 
-        conn.execute_raw_new(create_table, vec![]).await.unwrap();
+        conn.execute_raw(create_table, vec![]).await.unwrap();
 
         let insert = r#"
             INSERT INTO `encodings_test` (gb18030)
             VALUES ("法式咸派"), (?)
         "#;
 
-        conn.query_raw_new(insert, vec!["土豆".into()]).await.unwrap();
+        conn.query_raw(insert, vec!["土豆".into()]).await.unwrap();
 
         let select = ast::Select::from_table("encodings_test").value(ast::asterisk());
         let result = conn.query(select.into()).await.unwrap();
@@ -542,8 +544,8 @@ VALUES (1, 'Joe', 27, 20000.00 );
 
         let conn = Quaint::new(&CONN_STR).await.unwrap();
 
-        conn.query_raw_new(drop_table, vec![]).await.unwrap();
-        conn.query_raw_new(create_table, vec![]).await.unwrap();
+        conn.query_raw(drop_table, vec![]).await.unwrap();
+        conn.query_raw(create_table, vec![]).await.unwrap();
 
         let insert = Insert::multi_into("nested", &["nested"])
             .values(vec!["{\"isTrue\": true}"])
@@ -571,8 +573,8 @@ VALUES (1, 'Joe', 27, 20000.00 );
 
         let conn = Quaint::new(&CONN_STR).await.unwrap();
 
-        conn.query_raw_new(drop_table, vec![]).await.unwrap();
-        conn.query_raw_new(create_table, vec![]).await.unwrap();
+        conn.query_raw(drop_table, vec![]).await.unwrap();
+        conn.query_raw(create_table, vec![]).await.unwrap();
 
         let insert = Insert::single_into("float_precision_test").value("f", 6.4123456);
         let select = Select::from_table("float_precision_test").column("f");
@@ -586,7 +588,7 @@ VALUES (1, 'Joe', 27, 20000.00 );
     #[tokio::test]
     async fn newdecimal_conversion_is_handled_correctly() {
         let conn = Quaint::new(&CONN_STR).await.unwrap();
-        let result = conn.query_raw_new("SELECT SUM(1) AS THEONE", vec![]).await.unwrap();
+        let result = conn.query_raw("SELECT SUM(1) AS THEONE", vec![]).await.unwrap();
 
         assert_eq!(
             result.into_single().unwrap()[0],
@@ -606,8 +608,8 @@ VALUES (1, 'Joe', 27, 20000.00 );
         let drop_table = "DROP TABLE IF EXISTS `json_test`";
         let conn = Quaint::new(&CONN_STR).await.unwrap();
 
-        conn.query_raw_new(drop_table, vec![]).await.unwrap();
-        conn.query_raw_new(create_table, vec![]).await.unwrap();
+        conn.query_raw(drop_table, vec![]).await.unwrap();
+        conn.query_raw(create_table, vec![]).await.unwrap();
 
         let insert = Insert::single_into("json_test").value("j", r#"{"some": "json"}"#);
         let select = Select::from_table("json_test").column("j");
@@ -641,8 +643,8 @@ VALUES (1, 'Joe', 27, 20000.00 );
 
         let drop_table = r#"DROP TABLE IF EXISTS `unsigned_integers_test`"#;
 
-        conn.query_raw_new(drop_table, vec![]).await.unwrap();
-        conn.query_raw_new(create_table, vec![]).await.unwrap();
+        conn.query_raw(drop_table, vec![]).await.unwrap();
+        conn.query_raw(create_table, vec![]).await.unwrap();
 
         let insert = Insert::multi_into("unsigned_integers_test", &["big"])
             .values((2,))
@@ -676,8 +678,8 @@ VALUES (1, 'Joe', 27, 20000.00 );
 
         let drop_table = r#"DROP TABLE IF EXISTS `out_of_range_integers_test`"#;
 
-        conn.query_raw_new(drop_table, vec![]).await.unwrap();
-        conn.query_raw_new(create_table, vec![]).await.unwrap();
+        conn.query_raw(drop_table, vec![]).await.unwrap();
+        conn.query_raw(create_table, vec![]).await.unwrap();
 
         // Negative value
         {
@@ -711,12 +713,12 @@ VALUES (1, 'Joe', 27, 20000.00 );
 
         let insert = r#"INSERT INTO `bigint_unsigned_test` (`big`) VALUES (18446744073709551615)"#;
 
-        conn.query_raw_new(drop_table, vec![]).await.unwrap();
-        conn.query_raw_new(create_table, vec![]).await.unwrap();
-        conn.query_raw_new(insert, vec![]).await.unwrap();
+        conn.query_raw(drop_table, vec![]).await.unwrap();
+        conn.query_raw(create_table, vec![]).await.unwrap();
+        conn.query_raw(insert, vec![]).await.unwrap();
 
         let result = conn
-            .query_raw_new("SELECT * FROM `bigint_unsigned_test`", vec![])
+            .query_raw("SELECT * FROM `bigint_unsigned_test`", vec![])
             .await
             .unwrap();
 
@@ -742,8 +744,8 @@ VALUES (1, 'Joe', 27, 20000.00 );
         let insert = Insert::single_into("table_with_json").value("obj", serde_json::json!({ "a": "a" }));
         let second_insert = Insert::single_into("table_with_json").value("obj", serde_json::json!({ "a": "b" }));
 
-        conn.query_raw_new(drop_table, vec![]).await.unwrap();
-        conn.query_raw_new(create_table, vec![]).await.unwrap();
+        conn.query_raw(drop_table, vec![]).await.unwrap();
+        conn.query_raw(create_table, vec![]).await.unwrap();
         conn.query(insert.into()).await.unwrap();
         conn.query(second_insert.into()).await.unwrap();
 

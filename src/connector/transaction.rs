@@ -46,20 +46,12 @@ impl<'a> Queryable for Transaction<'a> {
         self.inner.execute(q).await
     }
 
-    async fn query_raw(&self, sql: &str, params: &[Value<'_>]) -> crate::Result<ResultSet> {
+    async fn query_raw(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<ResultSet> {
         self.inner.query_raw(sql, params).await
     }
 
-    async fn execute_raw(&self, sql: &str, params: &[Value<'_>]) -> crate::Result<u64> {
+    async fn execute_raw(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<u64> {
         self.inner.execute_raw(sql, params).await
-    }
-
-    async fn query_raw_new(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<ResultSet> {
-        self.inner.query_raw_new(sql, params).await
-    }
-
-    async fn execute_raw_new(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<u64> {
-        self.inner.execute_raw_new(sql, params).await
     }
 
     async fn raw_cmd(&self, cmd: &str) -> crate::Result<()> {

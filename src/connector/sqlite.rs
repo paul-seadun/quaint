@@ -10,9 +10,10 @@ use crate::{
 };
 use async_trait::async_trait;
 pub use config::*;
+use futures::TryStreamExt;
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteRow},
-    Connect, Executor, Row as _, SqliteConnection,
+    Column as _, Connect, Row as _, SqliteConnection,
 };
 use std::{collections::HashSet, convert::TryFrom, future::Future, time::Duration};
 use tokio::{sync::Mutex, time::timeout};
@@ -94,19 +95,15 @@ impl TransactionCapable for Sqlite {}
 impl Queryable for Sqlite {
     async fn query(&self, q: Query<'_>) -> crate::Result<ResultSet> {
         let (sql, params) = visitor::Sqlite::build(q)?;
-        self.query_raw_new(&sql, params).await
+        self.query_raw(&sql, params).await
     }
 
     async fn execute(&self, q: Query<'_>) -> crate::Result<u64> {
         let (sql, params) = visitor::Sqlite::build(q)?;
-        self.execute_raw_new(&sql, params).await
+        self.execute_raw(&sql, params).await
     }
 
-    async fn query_raw(&self, _: &str, _: &[Value<'_>]) -> crate::Result<ResultSet> {
-        todo!()
-    }
-
-    async fn query_raw_new(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<ResultSet> {
+    async fn query_raw(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<ResultSet> {
         metrics::query_new("sqlite.query_raw", sql, params, move |params| async move {
             let mut query = sqlx::query(sql);
 
@@ -115,20 +112,30 @@ impl Queryable for Sqlite {
             }
 
             let mut conn = self.connection.lock().await;
-            let describe = self.timeout(conn.describe(sql)).await?;
-            let columns = describe.columns.into_iter().map(|c| c.name).collect();
+            let mut columns = Vec::new();
+            let mut rows = Vec::new();
 
-            let rows = query
-                .try_map(|row| conversion::map_row(row))
-                .fetch_all(&mut *conn)
-                .await?;
+            self.timeout(async {
+                let mut stream = query.fetch(&mut *conn);
+
+                while let Some(row) = stream.try_next().await? {
+                    if columns.is_empty() {
+                        columns = row.columns().iter().map(|c| c.name().to_string()).collect();
+                    }
+
+                    rows.push(conversion::map_row(row)?);
+                }
+
+                Ok::<(), Error>(())
+            })
+            .await?;
 
             Ok(ResultSet::new(columns, rows))
         })
         .await
     }
 
-    async fn execute_raw_new(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<u64> {
+    async fn execute_raw(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<u64> {
         metrics::query_new("sqlite.execute_raw", sql, params, |params| async move {
             let mut query = sqlx::query(sql);
 
@@ -137,21 +144,17 @@ impl Queryable for Sqlite {
             }
 
             let mut conn = self.connection.lock().await;
-            let changes = query.execute(&mut *conn).await?;
+            let changes = self.timeout(query.execute(&mut *conn)).await?;
 
             Ok(changes)
         })
         .await
     }
 
-    async fn execute_raw(&self, _: &str, _: &[Value<'_>]) -> crate::Result<u64> {
-        todo!()
-    }
-
     async fn raw_cmd(&self, cmd: &str) -> crate::Result<()> {
         metrics::query_new("sqlite.raw_cmd", cmd, Vec::new(), move |_| async move {
             let mut conn = self.connection.lock().await;
-            sqlx::query(cmd).execute(&mut *conn).await?;
+            self.timeout(sqlx::query(cmd).execute(&mut *conn)).await?;
             Ok(())
         })
         .await
@@ -159,7 +162,7 @@ impl Queryable for Sqlite {
 
     async fn version(&self) -> crate::Result<Option<String>> {
         let query = r#"SELECT sqlite_version() version;"#;
-        let rows = self.query_raw_new(query, vec![]).await?;
+        let rows = self.query_raw(query, vec![]).await?;
 
         let version_string = rows
             .get(0)
@@ -206,7 +209,7 @@ mod tests {
     async fn should_provide_a_database_connection() {
         let connection = Sqlite::new("db/test.db").await.unwrap();
         let res = connection
-            .query_raw_new("SELECT * FROM sqlite_master", vec![])
+            .query_raw("SELECT * FROM sqlite_master", vec![])
             .await
             .unwrap();
 
@@ -217,7 +220,7 @@ mod tests {
     async fn should_provide_a_database_transaction() {
         let connection = Sqlite::new("db/test.db").await.unwrap();
         let tx = connection.start_transaction().await.unwrap();
-        let res = tx.query_raw_new("SELECT * FROM sqlite_master", vec![]).await.unwrap();
+        let res = tx.query_raw("SELECT * FROM sqlite_master", vec![]).await.unwrap();
 
         assert!(res.is_empty());
     }
@@ -311,10 +314,10 @@ mod tests {
 
         connection.raw_cmd(TABLE_DEF).await.unwrap();
 
-        let changes = connection.execute_raw_new(CREATE_USER, vec![]).await.unwrap();
+        let changes = connection.execute_raw(CREATE_USER, vec![]).await.unwrap();
         assert_eq!(1, changes);
 
-        let rows = connection.query_raw_new("SELECT * FROM USER", vec![]).await.unwrap();
+        let rows = connection.query_raw("SELECT * FROM USER", vec![]).await.unwrap();
         assert_eq!(rows.len(), 1);
 
         let row = rows.get(0).unwrap();
@@ -471,12 +474,12 @@ mod tests {
             .unwrap();
 
         let res = conn
-            .query_raw_new("INSERT INTO test_null_constraint_violation DEFAULT VALUES", vec![])
+            .query_raw("INSERT INTO test_null_constraint_violation DEFAULT VALUES", vec![])
             .await;
 
         let err = res.unwrap_err();
 
-        match dbg!(err.kind()) {
+        match err.kind() {
             ErrorKind::NullConstraintViolation { constraint } => {
                 assert_eq!(Some("1299"), err.original_code());
                 assert_eq!(

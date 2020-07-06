@@ -159,18 +159,18 @@ impl Mssql {
 impl Queryable for Mssql {
     async fn query(&self, q: Query<'_>) -> crate::Result<ResultSet> {
         let (sql, params) = visitor::Mssql::build(q)?;
-        self.query_raw(&sql, &params[..]).await
+        self.query_raw(&sql, params).await
     }
 
     async fn execute(&self, q: Query<'_>) -> crate::Result<u64> {
         let (sql, params) = visitor::Mssql::build(q)?;
-        self.execute_raw(&sql, &params[..]).await
+        self.execute_raw(&sql, params).await
     }
 
-    async fn query_raw(&self, sql: &str, params: &[Value<'_>]) -> crate::Result<ResultSet> {
-        metrics::query("mssql.query_raw", sql, params, move || async move {
+    async fn query_raw(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<ResultSet> {
+        metrics::query_new("mssql.query_raw", sql, params, move |params| async move {
             let mut client = self.client.lock().await;
-            let params = conversion::conv_params(params)?;
+            let params = conversion::conv_params(&params)?;
             let query = client.query(sql, params.as_slice());
 
             let results = self.timeout(query).await?;
@@ -201,10 +201,10 @@ impl Queryable for Mssql {
         .await
     }
 
-    async fn execute_raw(&self, sql: &str, params: &[Value<'_>]) -> crate::Result<u64> {
-        metrics::query("mssql.execute_raw", sql, params, move || async move {
+    async fn execute_raw(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<u64> {
+        metrics::query_new("mssql.execute_raw", sql, params, move |params| async move {
             let mut client = self.client.lock().await;
-            let params = conversion::conv_params(params)?;
+            let params = conversion::conv_params(&params)?;
             let query = client.execute(sql, params.as_slice());
 
             let changes = self.timeout(query).await?.total();
@@ -215,7 +215,7 @@ impl Queryable for Mssql {
     }
 
     async fn raw_cmd(&self, cmd: &str) -> crate::Result<()> {
-        metrics::query("mssql.raw_cmd", cmd, &[], move || async move {
+        metrics::query_new("mssql.raw_cmd", cmd, vec![], move |_| async move {
             let mut client = self.client.lock().await;
             self.timeout(client.simple_query(cmd)).await?.into_results().await?;
 
@@ -226,7 +226,7 @@ impl Queryable for Mssql {
 
     async fn version(&self) -> crate::Result<Option<String>> {
         let query = r#"SELECT @@VERSION AS version"#;
-        let rows = self.query_raw(query, &[]).await?;
+        let rows = self.query_raw(query, vec![]).await?;
 
         let version_string = rows
             .get(0)
@@ -378,7 +378,7 @@ mod tests {
     async fn database_connection() -> crate::Result<()> {
         let connection = single::Quaint::new(&CONN_STR).await?;
 
-        let res = connection.query_raw("SELECT 1", &[]).await?;
+        let res = connection.query_raw("SELECT 1", vec![]).await?;
         let row = res.get(0).unwrap();
 
         assert_eq!(row[0].as_i64(), Some(1));
@@ -391,7 +391,7 @@ mod tests {
         let pool = pooled::Quaint::builder(&CONN_STR)?.build();
         let connection = pool.check_out().await?;
 
-        let res = connection.query_raw("SELECT 1", &[]).await?;
+        let res = connection.query_raw("SELECT 1", vec![]).await?;
         let row = res.get(0).unwrap();
 
         assert_eq!(row[0].as_i64(), Some(1));
@@ -405,7 +405,7 @@ mod tests {
         let connection = pool.check_out().await?;
 
         let tx = connection.start_transaction().await?;
-        let res = tx.query_raw("SELECT 1", &[]).await?;
+        let res = tx.query_raw("SELECT 1", vec![]).await?;
 
         tx.commit().await?;
 

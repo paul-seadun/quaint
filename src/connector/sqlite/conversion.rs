@@ -113,7 +113,7 @@ pub fn map_row<'a>(row: SqliteRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
 
         let value = match value_ref.type_info() {
             #[cfg(feature = "chrono-0_4")]
-            Some(ref ti) if <i64 as Type<Sqlite>>::compatible(ti) && ti.name() == "DATETIME" => {
+            ti if <i64 as Type<Sqlite>>::compatible(ti) && ti.name() == "DATETIME" => {
                 let int_opt: Option<i64> = Decode::<Sqlite>::decode(value_ref).map_err(decode_err)?;
 
                 let dt = int_opt.map(|ts| {
@@ -127,7 +127,7 @@ pub fn map_row<'a>(row: SqliteRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
             }
 
             #[cfg(feature = "chrono-0_4")]
-            Some(ref ti) if <String as Type<Sqlite>>::compatible(ti) && ti.name() == "DATETIME" => {
+            ti if <String as Type<Sqlite>>::compatible(ti) && ti.name() == "DATETIME" => {
                 let str_opt: Option<String> = Decode::<Sqlite>::decode(value_ref).map_err(decode_err)?;
 
                 match str_opt {
@@ -154,45 +154,45 @@ pub fn map_row<'a>(row: SqliteRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
                 }
             }
 
-            Some(ref ti) if <i64 as Type<Sqlite>>::compatible(ti) => {
+            ti if <i64 as Type<Sqlite>>::compatible(ti) => {
                 let int_opt = Decode::<Sqlite>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Integer(int_opt)
             }
 
-            Some(ref ti) if <f32 as Type<Sqlite>>::compatible(ti) => {
+            ti if <f32 as Type<Sqlite>>::compatible(ti) => {
                 let f_opt: Option<f32> = Decode::<Sqlite>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Real(f_opt.map(|f| Decimal::from_f32(f).unwrap()))
             }
 
-            Some(ref ti) if <f64 as Type<Sqlite>>::compatible(ti) => {
+            ti if <f64 as Type<Sqlite>>::compatible(ti) => {
                 let f_opt: Option<f64> = Decode::<Sqlite>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Real(f_opt.map(|f| Decimal::from_f64(f).unwrap()))
             }
 
-            Some(ref ti) if <String as Type<Sqlite>>::compatible(ti) => {
+            ti if <String as Type<Sqlite>>::compatible(ti) => {
                 let string_opt: Option<String> = Decode::<Sqlite>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Text(string_opt.map(Cow::from))
             }
 
-            Some(ref ti) if <Vec<u8> as Type<Sqlite>>::compatible(ti) => {
+            ti if <Vec<u8> as Type<Sqlite>>::compatible(ti) => {
                 let bytes_opt: Option<Vec<u8>> = Decode::<Sqlite>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Bytes(bytes_opt.map(Cow::from))
             }
 
-            Some(ref ti) if <bool as Type<Sqlite>>::compatible(ti) => {
+            ti if <bool as Type<Sqlite>>::compatible(ti) => {
                 let bool_opt = Decode::<Sqlite>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Boolean(bool_opt)
             }
 
-            Some(ref ti) if ti.name() == "NULL" => Value::Integer(None),
+            ti if ti.name() == "NULL" => Value::Integer(None),
 
-            Some(ref ti) => {
+            ti => {
                 let msg = format!("Type {} is not yet supported in the SQLite connector.", ti.name());
                 let kind = ErrorKind::conversion(msg.clone());
 
@@ -206,7 +206,6 @@ pub fn map_row<'a>(row: SqliteRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
 
                 Err(error)?
             }
-            None => Value::Integer(None),
         };
 
         result.push(value);

@@ -1,106 +1,14 @@
 use crate::error::{Error, ErrorKind};
-use lru_cache::LruCache;
-use native_tls::{Certificate, Identity};
 use percent_encoding::percent_decode;
+use sqlx::postgres::{PgConnectOptions, PgSslMode};
 use std::{
     borrow::{Borrow, Cow},
-    fs,
+    path::{Path, PathBuf},
     time::Duration,
 };
-use tokio_postgres::{config::SslMode, Config, Statement};
 use url::Url;
 
 pub(crate) const DEFAULT_SCHEMA: &str = "public";
-
-#[derive(Clone)]
-pub(crate) struct Hidden<T>(pub(crate) T);
-
-impl<T> std::fmt::Debug for Hidden<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "<HIDDEN>")
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SslAcceptMode {
-    Strict,
-    AcceptInvalidCerts,
-}
-
-#[derive(Debug, Clone)]
-pub struct SslParams {
-    certificate_file: Option<String>,
-    identity_file: Option<String>,
-    identity_password: Hidden<Option<String>>,
-    ssl_accept_mode: SslAcceptMode,
-}
-
-#[derive(Debug)]
-pub(crate) struct SslAuth {
-    pub(crate) certificate: Hidden<Option<Certificate>>,
-    pub(crate) identity: Hidden<Option<Identity>>,
-    pub(crate) ssl_accept_mode: SslAcceptMode,
-}
-
-impl Default for SslAuth {
-    fn default() -> Self {
-        Self {
-            certificate: Hidden(None),
-            identity: Hidden(None),
-            ssl_accept_mode: SslAcceptMode::AcceptInvalidCerts,
-        }
-    }
-}
-
-impl SslAuth {
-    fn certificate(&mut self, certificate: Certificate) -> &mut Self {
-        self.certificate = Hidden(Some(certificate));
-        self
-    }
-
-    fn identity(&mut self, identity: Identity) -> &mut Self {
-        self.identity = Hidden(Some(identity));
-        self
-    }
-
-    fn accept_mode(&mut self, mode: SslAcceptMode) -> &mut Self {
-        self.ssl_accept_mode = mode;
-        self
-    }
-}
-
-impl SslParams {
-    pub(crate) async fn into_auth(self) -> crate::Result<SslAuth> {
-        let mut auth = SslAuth::default();
-        auth.accept_mode(self.ssl_accept_mode);
-
-        if let Some(ref cert_file) = self.certificate_file {
-            let cert = fs::read(cert_file).map_err(|err| {
-                Error::builder(ErrorKind::TlsError {
-                    message: format!("cert file not found ({})", err),
-                })
-                .build()
-            })?;
-
-            auth.certificate(Certificate::from_pem(&cert)?);
-        }
-
-        if let Some(ref identity_file) = self.identity_file {
-            let db = fs::read(identity_file).map_err(|err| {
-                Error::builder(ErrorKind::TlsError {
-                    message: format!("identity file not found ({})", err),
-                })
-                .build()
-            })?;
-            let password = self.identity_password.0.as_ref().map(|s| s.as_str()).unwrap_or("");
-            let identity = Identity::from_pkcs12(&db, &password)?;
-
-            auth.identity(identity);
-        }
-
-        Ok(auth)
-    }
-}
 
 /// Wraps a connection url and exposes the parsing logic used by quaint, including default values.
 #[derive(Debug, Clone)]
@@ -194,22 +102,19 @@ impl PostgresUrl {
         self.query_params.pg_bouncer
     }
 
-    pub(crate) fn cache(&self) -> LruCache<String, Statement> {
+    pub(crate) fn statement_cache_size(&self) -> usize {
         if self.query_params.pg_bouncer == true {
-            LruCache::new(0)
+            0
         } else {
-            LruCache::new(self.query_params.statement_cache_size)
+            self.query_params.statement_cache_size
         }
     }
 
     fn parse_query_params(url: &Url) -> Result<PostgresUrlQueryParams, Error> {
         let mut connection_limit = None;
         let mut schema = String::from(DEFAULT_SCHEMA);
-        let mut certificate_file = None;
-        let mut identity_file = None;
-        let mut identity_password = None;
-        let mut ssl_accept_mode = SslAcceptMode::AcceptInvalidCerts;
-        let mut ssl_mode = SslMode::Prefer;
+        let mut ssl_mode = PgSslMode::Prefer;
+        let mut root_cert_path = None;
         let mut host = None;
         let mut socket_timeout = None;
         let mut connect_timeout = None;
@@ -225,9 +130,12 @@ impl PostgresUrl {
                 }
                 "sslmode" => {
                     match v.as_ref() {
-                        "disable" => ssl_mode = SslMode::Disable,
-                        "prefer" => ssl_mode = SslMode::Prefer,
-                        "require" => ssl_mode = SslMode::Require,
+                        "disable" => ssl_mode = PgSslMode::Disable,
+                        "allow" => ssl_mode = PgSslMode::Allow,
+                        "prefer" => ssl_mode = PgSslMode::Prefer,
+                        "require" => ssl_mode = PgSslMode::Require,
+                        "verify_ca" => ssl_mode = PgSslMode::VerifyCa,
+                        "verify_full" => ssl_mode = PgSslMode::VerifyFull,
                         _ => {
                             #[cfg(not(feature = "tracing-log"))]
                             debug!("Unsupported ssl mode {}, defaulting to 'prefer'", v);
@@ -237,39 +145,12 @@ impl PostgresUrl {
                     };
                 }
                 "sslcert" => {
-                    certificate_file = Some(v.to_string());
-                }
-                "sslidentity" => {
-                    identity_file = Some(v.to_string());
-                }
-                "sslpassword" => {
-                    identity_password = Some(v.to_string());
+                    root_cert_path = Some(Path::new(&*v).to_path_buf());
                 }
                 "statement_cache_size" => {
                     statement_cache_size = v
                         .parse()
                         .map_err(|_| Error::builder(ErrorKind::InvalidConnectionArguments).build())?;
-                }
-                "sslaccept" => {
-                    match v.as_ref() {
-                        "strict" => {
-                            ssl_accept_mode = SslAcceptMode::Strict;
-                        }
-                        "accept_invalid_certs" => {
-                            ssl_accept_mode = SslAcceptMode::AcceptInvalidCerts;
-                        }
-                        _ => {
-                            #[cfg(not(feature = "tracing-log"))]
-                            debug!("Unsupported SSL accept mode {}, defaulting to `strict`", v);
-                            #[cfg(feature = "tracing-log")]
-                            tracing::debug!(
-                                message = "Unsupported SSL accept mode, defaulting to `strict`",
-                                mode = &*v
-                            );
-
-                            ssl_accept_mode = SslAcceptMode::Strict;
-                        }
-                    };
                 }
                 "schema" => {
                     schema = v.to_string();
@@ -305,12 +186,6 @@ impl PostgresUrl {
         }
 
         Ok(PostgresUrlQueryParams {
-            ssl_params: SslParams {
-                certificate_file,
-                identity_file,
-                ssl_accept_mode,
-                identity_password: Hidden(identity_password),
-            },
             connection_limit,
             schema,
             ssl_mode,
@@ -319,11 +194,8 @@ impl PostgresUrl {
             socket_timeout,
             pg_bouncer,
             statement_cache_size,
+            root_cert_path,
         })
-    }
-
-    pub(crate) fn ssl_params(&self) -> &SslParams {
-        &self.query_params.ssl_params
     }
 
     #[cfg(feature = "pooled")]
@@ -331,31 +203,30 @@ impl PostgresUrl {
         self.query_params.connection_limit
     }
 
-    pub(crate) fn to_config(&self) -> Config {
-        let mut config = Config::new();
+    pub(crate) fn to_config(&self) -> PgConnectOptions {
+        let mut opts = PgConnectOptions::new()
+            .host(self.host())
+            .port(self.port())
+            .username(self.username().borrow())
+            .password(self.password().borrow())
+            .database(self.dbname())
+            .statement_cache_capacity(self.statement_cache_size())
+            .ssl_mode(self.query_params.ssl_mode);
 
-        config.user(self.username().borrow());
-        config.password(self.password().borrow() as &str);
-        config.host(self.host());
-        config.port(self.port());
-        config.dbname(self.dbname());
+        if let Some(ref path) = self.query_params.root_cert_path {
+            opts = opts.ssl_root_cert(path);
+        }
 
-        if let Some(connect_timeout) = self.query_params.connect_timeout {
-            config.connect_timeout(connect_timeout);
-        };
-
-        config.ssl_mode(self.query_params.ssl_mode);
-
-        config
+        opts
     }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct PostgresUrlQueryParams {
-    ssl_params: SslParams,
+    ssl_mode: PgSslMode,
+    root_cert_path: Option<PathBuf>,
     connection_limit: Option<usize>,
     schema: String,
-    ssl_mode: SslMode,
     pg_bouncer: bool,
     host: Option<String>,
     socket_timeout: Option<Duration>,

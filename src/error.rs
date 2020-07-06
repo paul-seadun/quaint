@@ -4,6 +4,8 @@
 #[cfg(feature = "mysql")]
 use sqlx::mysql::MySqlDatabaseError;
 #[cfg(feature = "sqlite")]
+use sqlx::postgres::PgDatabaseError;
+#[cfg(feature = "sqlite")]
 use sqlx::sqlite::SqliteError;
 use std::{borrow::Cow, fmt, io, num};
 use thiserror::Error;
@@ -287,6 +289,18 @@ impl From<sqlx::Error> for Error {
             #[cfg(feature = "sqlite")]
             sqlx::Error::Database(e) if e.try_downcast_ref::<SqliteError>().is_some() => {
                 let mysql_error = e.try_downcast::<SqliteError>().unwrap();
+                Error::from(*mysql_error)
+            }
+
+            #[cfg(feature = "sqlite")]
+            sqlx::Error::Database(e) if e.try_downcast_ref::<SqliteError>().is_some() => {
+                let mysql_error = e.try_downcast::<SqliteError>().unwrap();
+                Error::from(*mysql_error)
+            }
+
+            #[cfg(feature = "sqlite")]
+            sqlx::Error::Database(e) if e.try_downcast_ref::<PgDatabaseError>().is_some() => {
+                let mysql_error = e.try_downcast::<PgDatabaseError>().unwrap();
                 Error::from(*mysql_error)
             }
 

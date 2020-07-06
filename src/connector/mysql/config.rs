@@ -94,7 +94,6 @@ impl MysqlUrl {
         let mut connection_limit = None;
         let mut ssl_mode = MySqlSslMode::default();
         let mut root_cert_path = None;
-        let mut use_ssl = false;
         let mut socket = None;
         let mut socket_timeout = None;
         let mut connect_timeout = None;
@@ -109,8 +108,22 @@ impl MysqlUrl {
 
                     connection_limit = Some(as_int);
                 }
+                "sslmode" => {
+                    match v.as_ref() {
+                        "disabled" => ssl_mode = MySqlSslMode::Disabled,
+                        "preferred" => ssl_mode = MySqlSslMode::Preferred,
+                        "required" => ssl_mode = MySqlSslMode::Required,
+                        "verify_ca" => ssl_mode = MySqlSslMode::VerifyCa,
+                        "verify_identity" => ssl_mode = MySqlSslMode::VerifyIdentity,
+                        _ => {
+                            #[cfg(not(feature = "tracing-log"))]
+                            debug!("Unsupported ssl mode {}, defaulting to 'prefer'", v);
+                            #[cfg(feature = "tracing-log")]
+                            tracing::debug!(message = "Unsupported SSL mode, defaulting to `prefer`", mode = &*v);
+                        }
+                    };
+                }
                 "sslcert" => {
-                    use_ssl = true;
                     root_cert_path = Some(Path::new(&*v).to_path_buf());
                 }
                 "socket" => {
@@ -133,27 +146,6 @@ impl MysqlUrl {
                         .parse()
                         .map_err(|_| Error::builder(ErrorKind::InvalidConnectionArguments).build())?;
                 }
-                "sslaccept" => {
-                    use_ssl = true;
-
-                    match v.as_ref() {
-                        "strict" => {
-                            ssl_mode = MySqlSslMode::VerifyIdentity;
-                        }
-                        "accept_invalid_certs" => {
-                            ssl_mode = MySqlSslMode::Required;
-                        }
-                        _ => {
-                            #[cfg(not(feature = "tracing-log"))]
-                            debug!("Unsupported SSL accept mode {}, defaulting to `strict`", v);
-                            #[cfg(feature = "tracing-log")]
-                            tracing::debug!(
-                                message = "Unsupported SSL accept mode, defaulting to `strict`",
-                                mode = &*v
-                            );
-                        }
-                    };
-                }
                 _ => {
                     #[cfg(not(feature = "tracing-log"))]
                     trace!("Discarding connection string param: {}", k);
@@ -167,7 +159,6 @@ impl MysqlUrl {
             ssl_mode,
             root_cert_path,
             connection_limit,
-            use_ssl,
             socket,
             connect_timeout,
             socket_timeout,
@@ -219,7 +210,6 @@ pub(crate) struct MysqlUrlQueryParams {
     ssl_mode: MySqlSslMode,
     root_cert_path: Option<PathBuf>,
     connection_limit: Option<usize>,
-    use_ssl: bool,
     socket: Option<String>,
     socket_timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
