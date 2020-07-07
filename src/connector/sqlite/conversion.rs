@@ -10,7 +10,7 @@ use rust_decimal::{
 use sqlx::{
     decode::Decode,
     query::Query,
-    sqlite::{SqliteArguments, SqliteRow},
+    sqlite::{SqliteArguments, SqliteRow, SqliteTypeInfo},
     Row, Sqlite, Type, TypeInfo, ValueRef,
 };
 use std::{borrow::Cow, convert::TryFrom};
@@ -29,8 +29,8 @@ pub(crate) enum SqliteValue<'a> {
     Boolean(Option<bool>),
 }
 
-impl<'a> Bind<'a> for Query<'a, Sqlite, SqliteArguments<'a>> {
-    fn bind_value(self, value: Value<'a>) -> crate::Result<Self> {
+impl<'a> Bind<'a, Sqlite> for Query<'a, Sqlite, SqliteArguments<'a>> {
+    fn bind_value(self, value: Value<'a>, _: Option<&SqliteTypeInfo>) -> crate::Result<Self> {
         let query = match SqliteValue::try_from(value)? {
             SqliteValue::Integer(i) => self.bind(i),
             SqliteValue::Real(r) => self.bind(r),

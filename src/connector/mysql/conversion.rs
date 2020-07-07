@@ -7,7 +7,7 @@ use chrono::{offset::Utc, DateTime, NaiveDate, NaiveTime};
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 use sqlx::{
     decode::Decode,
-    mysql::{MySqlArguments, MySqlRow},
+    mysql::{MySqlArguments, MySqlRow, MySqlTypeInfo},
     query::Query,
     MySql, Row, Type, TypeInfo, ValueRef,
 };
@@ -39,8 +39,8 @@ pub(crate) enum MyValue<'a> {
     Time(Option<chrono::NaiveTime>),
 }
 
-impl<'a> Bind<'a> for Query<'a, MySql, MySqlArguments> {
-    fn bind_value(self, value: Value<'a>) -> crate::Result<Self> {
+impl<'a> Bind<'a, MySql> for Query<'a, MySql, MySqlArguments> {
+    fn bind_value(self, value: Value<'a>, _: Option<&MySqlTypeInfo>) -> crate::Result<Self> {
         let query = match MyValue::try_from(value)? {
             MyValue::Integer(i) => self.bind(i),
             MyValue::Real(r) => self.bind(r),

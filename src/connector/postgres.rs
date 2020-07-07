@@ -10,6 +10,7 @@ use crate::{
 };
 use async_trait::async_trait;
 pub use config::*;
+use either::Either;
 use futures::{lock::Mutex, TryStreamExt};
 use sqlx::{Column as _, Connect, Executor, PgConnection, Row as _};
 use std::{future::Future, time::Duration};
@@ -87,13 +88,27 @@ impl Queryable for PostgreSql {
 
     async fn query_raw(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<ResultSet> {
         metrics::query_new("postgres.query_raw", sql, params, |params| async move {
+            let mut conn = self.connection.lock().await;
+            let describe = self.timeout(conn.describe(sql)).await?;
+
             let mut query = sqlx::query(sql);
 
-            for param in params.into_iter() {
-                query = query.bind_value(param)?;
-            }
+            match describe.parameters() {
+                Some(Either::Left(type_infos)) => {
+                    let values = params.into_iter();
+                    let infos = type_infos.into_iter().map(Some);
 
-            let mut conn = self.connection.lock().await;
+                    for (param, type_info) in values.zip(infos) {
+                        query = query.bind_value(param, type_info)?;
+                    }
+                }
+                _ => {
+                    for param in params.into_iter() {
+                        query = query.bind_value(param, None)?;
+                    }
+                }
+            };
+
             let mut columns = Vec::new();
             let mut rows = Vec::new();
 
@@ -122,7 +137,7 @@ impl Queryable for PostgreSql {
             let mut query = sqlx::query(sql);
 
             for param in params.into_iter() {
-                query = query.bind_value(param)?;
+                query = query.bind_value(param, None)?;
             }
 
             let mut conn = self.connection.lock().await;
@@ -355,12 +370,15 @@ mod tests {
         let insert = ast::Insert::single_into("types")
             .value("binary_bits", "111011100011")
             .value("binary_bits_arr", Value::array(vec!["111011100011"]))
-            .value("bytes_uuid", "111142ec-880b-4062-913d-8eac479ab957")
+            .value(
+                "bytes_uuid",
+                Value::uuid("111142ec-880b-4062-913d-8eac479ab957".parse().unwrap()),
+            )
             .value(
                 "bytes_uuid_arr",
                 Value::array(vec![
-                    "111142ec-880b-4062-913d-8eac479ab957",
-                    "111142ec-880b-4062-913d-8eac479ab958",
+                    Value::uuid("111142ec-880b-4062-913d-8eac479ab957".parse().unwrap()),
+                    Value::uuid("111142ec-880b-4062-913d-8eac479ab958".parse().unwrap()),
                 ]),
             )
             .value("network_inet", "127.0.0.1")
@@ -373,7 +391,7 @@ mod tests {
             .value("time_date", Value::date("2020-03-02".parse().unwrap()))
             .value("time_timetz", Value::datetime("2020-03-02T08:00:00Z".parse().unwrap()))
             .value("time_time", Value::time("08:00:00".parse().unwrap()))
-            .value("text_jsonb", "{\"isJSONB\": true}")
+            .value("text_jsonb", serde_json::json!({ "isJSONB": true }))
             .value(
                 "time_timestamptz",
                 Value::datetime("2020-03-02T08:00:00Z".parse().unwrap()),
@@ -398,14 +416,14 @@ mod tests {
                 Value::uuid("111142ec-880b-4062-913d-8eac479ab957".parse().unwrap()),
                 Value::uuid("111142ec-880b-4062-913d-8eac479ab958".parse().unwrap()),
             ]),
-            Value::text("127.0.0.1"),
-            Value::array(vec!["127.0.0.1"]),
+            Value::text("127.0.0.1/32"),
+            Value::array(vec!["127.0.0.1/32"]),
             Value::real("3.14".parse().unwrap()),
             Value::array(vec![3.14]),
             Value::real("3.14912932".parse().unwrap()),
             Value::real("0.00006927".parse().unwrap()),
             Value::real("3.55".parse().unwrap()),
-            Value::time("08:00:00".parse().unwrap()),
+            Value::datetime("1970-01-01T08:00:00Z".parse().unwrap()),
             Value::time("08:00:00".parse().unwrap()),
             Value::date("2020-03-02".parse().unwrap()),
             Value::json(serde_json::json!({ "isJSONB": true })),
@@ -559,7 +577,7 @@ mod tests {
             ErrorKind::NullConstraintViolation { constraint } => {
                 assert_eq!(Some("23502"), err.original_code());
                 assert_eq!(
-                    Some("null value in column \"id1\" of relation \"test_null_constraint_violation\" violates not-null constraint"),
+                    Some("null value in column \"id1\" violates not-null constraint"),
                     err.original_message()
                 );
                 assert_eq!(&DatabaseConstraint::Fields(vec![String::from("id1")]), constraint)
@@ -650,7 +668,7 @@ mod tests {
             ErrorKind::NullConstraintViolation { constraint } => {
                 assert_eq!(Some("23502"), err.original_code());
                 assert_eq!(
-                    Some("null value in column \"id\" of relation \"should_map_null_constraint_errors_test\" violates not-null constraint"),
+                    Some("null value in column \"id\" violates not-null constraint"),
                     err.original_message()
                 );
                 assert_eq!(constraint, &DatabaseConstraint::Fields(vec!["id".into()]))
@@ -674,7 +692,7 @@ mod tests {
         match err.kind() {
             ErrorKind::NullConstraintViolation { constraint } => {
                 assert_eq!(Some("23502"), err.original_code());
-                assert_eq!(Some("column \"optional\" of relation \"should_map_null_constraint_errors_test\" contains null values"), err.original_message());
+                assert_eq!(Some("column \"optional\" contains null values"), err.original_message());
                 assert_eq!(constraint, &DatabaseConstraint::Fields(vec!["optional".into()]))
             }
             other => panic!("{:?}", other),
@@ -699,7 +717,7 @@ mod tests {
 
         conn.query_raw(drop_table, vec![]).await.unwrap();
         conn.query_raw(create_table, vec![]).await.unwrap();
-        conn.query(insert.into()).await.unwrap();
+        conn.insert(insert.into()).await.unwrap();
         conn.query(second_insert.into()).await.unwrap();
 
         // Equals

@@ -80,7 +80,7 @@ impl Queryable for Mysql {
             let mut query = sqlx::query(sql);
 
             for param in params.into_iter() {
-                query = query.bind_value(param)?;
+                query = query.bind_value(param, None)?;
             }
 
             let mut conn = self.connection.lock().await;
@@ -112,7 +112,7 @@ impl Queryable for Mysql {
             let mut query = sqlx::query(sql);
 
             for param in params.into_iter() {
-                query = query.bind_value(param)?;
+                query = query.bind_value(param, None)?;
             }
 
             let mut conn = self.connection.lock().await;

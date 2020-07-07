@@ -3,7 +3,7 @@
 //! Error module
 #[cfg(feature = "mysql")]
 use sqlx::mysql::MySqlDatabaseError;
-#[cfg(feature = "sqlite")]
+#[cfg(feature = "postgresql")]
 use sqlx::postgres::PgDatabaseError;
 #[cfg(feature = "sqlite")]
 use sqlx::sqlite::SqliteError;
@@ -260,6 +260,24 @@ impl From<std::string::FromUtf8Error> for Error {
 impl From<sqlx::Error> for Error {
     fn from(e: sqlx::Error) -> Self {
         match e {
+            #[cfg(feature = "mysql")]
+            sqlx::Error::Database(e) if e.try_downcast_ref::<MySqlDatabaseError>().is_some() => {
+                let my_error = e.try_downcast::<MySqlDatabaseError>().unwrap();
+                Error::from(*my_error)
+            }
+
+            #[cfg(feature = "sqlite")]
+            sqlx::Error::Database(e) if e.try_downcast_ref::<SqliteError>().is_some() => {
+                let sqlite_error = e.try_downcast::<SqliteError>().unwrap();
+                Error::from(*sqlite_error)
+            }
+
+            #[cfg(feature = "postgresql")]
+            sqlx::Error::Database(e) if e.try_downcast_ref::<PgDatabaseError>().is_some() => {
+                let pg_error = e.try_downcast::<PgDatabaseError>().unwrap();
+                Error::from(*pg_error)
+            }
+
             sqlx::Error::Io(io_error) => Error::builder(ErrorKind::ConnectionError(io_error.into())).build(),
             sqlx::Error::ParseConnectOptions(_) => Error::builder(ErrorKind::InvalidConnectionArguments).build(),
             sqlx::Error::Tls(e) => Error::builder(ErrorKind::TlsError { message: e.to_string() }).build(),
@@ -278,30 +296,6 @@ impl From<sqlx::Error> for Error {
             sqlx::Error::Decode(e) => {
                 let kind = ErrorKind::conversion(e.to_string());
                 Error::builder(kind).build()
-            }
-
-            #[cfg(feature = "mysql")]
-            sqlx::Error::Database(e) if e.try_downcast_ref::<MySqlDatabaseError>().is_some() => {
-                let mysql_error = e.try_downcast::<MySqlDatabaseError>().unwrap();
-                Error::from(*mysql_error)
-            }
-
-            #[cfg(feature = "sqlite")]
-            sqlx::Error::Database(e) if e.try_downcast_ref::<SqliteError>().is_some() => {
-                let mysql_error = e.try_downcast::<SqliteError>().unwrap();
-                Error::from(*mysql_error)
-            }
-
-            #[cfg(feature = "sqlite")]
-            sqlx::Error::Database(e) if e.try_downcast_ref::<SqliteError>().is_some() => {
-                let mysql_error = e.try_downcast::<SqliteError>().unwrap();
-                Error::from(*mysql_error)
-            }
-
-            #[cfg(feature = "sqlite")]
-            sqlx::Error::Database(e) if e.try_downcast_ref::<PgDatabaseError>().is_some() => {
-                let mysql_error = e.try_downcast::<PgDatabaseError>().unwrap();
-                Error::from(*mysql_error)
             }
 
             e => Error::builder(ErrorKind::QueryError(e.into())).build(),

@@ -485,6 +485,7 @@ impl<'a> Value<'a> {
     pub fn as_date(&self) -> Option<NaiveDate> {
         match self {
             Value::Date(dt) => dt.clone(),
+            Value::DateTime(dt) => dt.map(|dt| dt.date().naive_utc()),
             _ => None,
         }
     }
@@ -503,6 +504,7 @@ impl<'a> Value<'a> {
     pub fn as_time(&self) -> Option<NaiveTime> {
         match self {
             Value::Time(time) => time.clone(),
+            Value::DateTime(dt) => dt.map(|dt| dt.time()),
             _ => None,
         }
     }
