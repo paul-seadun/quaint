@@ -14,6 +14,7 @@ mod connection_info;
 pub(crate) mod metrics;
 mod queryable;
 mod result_set;
+mod timeout;
 mod transaction;
 mod type_identifier;
 

@@ -4,19 +4,18 @@ mod error;
 
 use crate::{
     ast::{Query, Value},
-    connector::{bind::Bind, metrics, queryable::*, ResultSet},
+    connector::{bind::Bind, metrics, queryable::*, timeout::timeout, ResultSet},
     error::Error,
     visitor::{self, Visitor},
 };
 use async_trait::async_trait;
 pub use config::*;
-use futures::TryStreamExt;
+use futures::{lock::Mutex, TryStreamExt};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteRow},
     Column as _, Connect, Row as _, SqliteConnection,
 };
-use std::{collections::HashSet, convert::TryFrom, future::Future, time::Duration};
-use tokio::{sync::Mutex, time::timeout};
+use std::{collections::HashSet, convert::TryFrom, time::Duration};
 
 /// A connector interface for the SQLite database
 pub struct Sqlite {
@@ -69,24 +68,6 @@ impl Sqlite {
 
         Ok(())
     }
-
-    async fn timeout<T, F, E>(&self, f: F) -> crate::Result<T>
-    where
-        F: Future<Output = std::result::Result<T, E>>,
-        E: Into<Error>,
-    {
-        match self.socket_timeout {
-            Some(duration) => match timeout(duration, f).await {
-                Ok(Ok(result)) => Ok(result),
-                Ok(Err(err)) => Err(err.into()),
-                Err(to) => Err(to.into()),
-            },
-            None => match f.await {
-                Ok(result) => Ok(result),
-                Err(err) => Err(err.into()),
-            },
-        }
-    }
 }
 
 impl TransactionCapable for Sqlite {}
@@ -115,7 +96,7 @@ impl Queryable for Sqlite {
             let mut columns = Vec::new();
             let mut rows = Vec::new();
 
-            self.timeout(async {
+            timeout(self.socket_timeout, async {
                 let mut stream = query.fetch(&mut *conn);
 
                 while let Some(row) = stream.try_next().await? {
@@ -144,7 +125,7 @@ impl Queryable for Sqlite {
             }
 
             let mut conn = self.connection.lock().await;
-            let changes = self.timeout(query.execute(&mut *conn)).await?;
+            let changes = timeout(self.socket_timeout, query.execute(&mut *conn)).await?;
 
             Ok(changes)
         })
@@ -154,7 +135,7 @@ impl Queryable for Sqlite {
     async fn raw_cmd(&self, cmd: &str) -> crate::Result<()> {
         metrics::query_new("sqlite.raw_cmd", cmd, Vec::new(), move |_| async move {
             let mut conn = self.connection.lock().await;
-            self.timeout(sqlx::query(cmd).execute(&mut *conn)).await?;
+            timeout(self.socket_timeout, sqlx::query(cmd).execute(&mut *conn)).await?;
             Ok(())
         })
         .await

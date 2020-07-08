@@ -4,7 +4,7 @@ mod error;
 
 use crate::{
     ast::{Query, Value},
-    connector::{bind::Bind, metrics, queryable::*, ResultSet, Transaction},
+    connector::{bind::Bind, metrics, queryable::*, timeout::timeout, ResultSet, Transaction},
     error::Error,
     visitor::{self, Visitor},
 };
@@ -13,8 +13,7 @@ pub use config::*;
 use either::Either;
 use futures::{lock::Mutex, TryStreamExt};
 use sqlx::{Column as _, Connect, Executor, PgConnection, Row as _};
-use std::{future::Future, time::Duration};
-use tokio::time::timeout;
+use std::time::Duration;
 
 /// A connector interface for the PostgreSQL database.
 #[derive(Debug)]
@@ -52,24 +51,6 @@ impl PostgreSql {
             pg_bouncer: url.pg_bouncer(),
         })
     }
-
-    async fn timeout<T, F, E>(&self, f: F) -> crate::Result<T>
-    where
-        F: Future<Output = std::result::Result<T, E>>,
-        E: Into<Error>,
-    {
-        match self.socket_timeout {
-            Some(duration) => match timeout(duration, f).await {
-                Ok(Ok(result)) => Ok(result),
-                Ok(Err(err)) => Err(err.into()),
-                Err(to) => Err(to.into()),
-            },
-            None => match f.await {
-                Ok(result) => Ok(result),
-                Err(err) => Err(err.into()),
-            },
-        }
-    }
 }
 
 impl TransactionCapable for PostgreSql {}
@@ -89,7 +70,7 @@ impl Queryable for PostgreSql {
     async fn query_raw(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<ResultSet> {
         metrics::query_new("postgres.query_raw", sql, params, |params| async move {
             let mut conn = self.connection.lock().await;
-            let describe = self.timeout(conn.describe(sql)).await?;
+            let describe = timeout(self.socket_timeout, conn.describe(sql)).await?;
 
             let mut query = sqlx::query(sql);
 
@@ -112,7 +93,7 @@ impl Queryable for PostgreSql {
             let mut columns = Vec::new();
             let mut rows = Vec::new();
 
-            self.timeout(async {
+            timeout(self.socket_timeout, async {
                 let mut stream = query.fetch(&mut *conn);
 
                 while let Some(row) = stream.try_next().await? {
@@ -151,7 +132,7 @@ impl Queryable for PostgreSql {
     async fn raw_cmd(&self, cmd: &str) -> crate::Result<()> {
         metrics::query("postgres.raw_cmd", cmd, &[], move || async move {
             let mut conn = self.connection.lock().await;
-            self.timeout(sqlx::query(cmd).execute(&mut *conn)).await?;
+            timeout(self.socket_timeout, sqlx::query(cmd).execute(&mut *conn)).await?;
             Ok(())
         })
         .await
