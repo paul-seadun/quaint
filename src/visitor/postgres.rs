@@ -43,23 +43,7 @@ impl<'a> Visitor<'a> for Postgres<'a> {
 
     fn parameter_substitution(&mut self) -> visitor::Result {
         self.write("$")?;
-        self.write(self.parameters.len())?;
-
-        match self.parameters.last() {
-            // For now, Postgres server on describing the query will tell the
-            // parameter type to be `JSON` if the column underneath is of that
-            // type. Our describe process needs to happen before we bind the
-            // values, and the database then infers the type for this parameter
-            // to be `JSON`.
-            //
-            // Due to performance reasons SQLx uses `JSONB` for all
-            // communication related to JSON. If the statement stored to the
-            // server expects `JSON`, our `JSONB` data will error. This will
-            // force the parameter to be of type `JSONB`, which can be used to
-            // write to columns of type `JSON` and `JSONB`.
-            Some(&Value::Json(_)) => self.write("::jsonb"),
-            _ => Ok(()),
-        }
+        self.write(self.parameters.len())
     }
 
     fn visit_limit_and_offset(&mut self, limit: Option<Value<'a>>, offset: Option<Value<'a>>) -> visitor::Result {

@@ -324,6 +324,10 @@ mod tests {
             CREATE TABLE types (
                 id SERIAL PRIMARY KEY,
 
+                text text,
+                text_arr text[],
+                vchar varchar(10),
+                vchar_arr varchar(10)[],
                 binary_bits bit(12),
                 binary_bits_arr bit(12)[],
                 bytes_uuid uuid,
@@ -349,6 +353,10 @@ mod tests {
         connection.raw_cmd(table).await.unwrap();
 
         let insert = ast::Insert::single_into("types")
+            .value("text", "lol")
+            .value("text_arr", Value::array(vec!["lol", "wut"]))
+            .value("vchar", "lol")
+            .value("vchar_arr", Value::array(vec!["lol", "wut"]))
             .value("binary_bits", "111011100011")
             .value("binary_bits_arr", Value::array(vec!["111011100011"]))
             .value(
@@ -390,6 +398,10 @@ mod tests {
 
         let expected = &[
             Value::integer(1),
+            Value::text("lol"),
+            Value::array(vec!["lol", "wut"]),
+            Value::text("lol"),
+            Value::array(vec!["lol", "wut"]),
             Value::text("111011100011"),
             Value::array(vec!["111011100011"]),
             Value::uuid("111142ec-880b-4062-913d-8eac479ab957".parse().unwrap()),
