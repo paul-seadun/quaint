@@ -40,7 +40,6 @@ postgresql = [
     "sqlx/postgres",
     "array",
     "bytes",
-    "tokio",
     "bit-vec",
     "ipnetwork"
 ]
@@ -50,11 +49,14 @@ sqlite = ["sqlx/sqlite"]
 json-1 = ["serde_json", "base64"]
 uuid-0_8 = ["uuid"]
 chrono-0_4 = ["chrono"]
-mysql = ["sqlx/mysql", "tokio"]
-mssql = ["tiberius", "uuid-0_8", "chrono-0_4", "tokio-util"]
+mysql = ["sqlx/mysql"]
+mssql = ["tiberius", "uuid-0_8", "chrono-0_4"]
 tracing-log = ["tracing", "tracing-core"]
 array = []
 serde-support = ["serde", "chrono/serde"]
+
+runtime-tokio = ["tokio", "tokio-util", "sqlx/runtime-tokio", "tiberius/sql-browser-tokio"]
+runtime-async-std = ["async-std", "sqlx/runtime-async-std", "tiberius/sql-browser-async-std"]
 
 [dependencies]
 url = "2.1"
@@ -69,7 +71,7 @@ async-trait = "0.1"
 hex = "0.4"
 bigdecimal = "0.1"
 
-sqlx = { git = "https://github.com/pimeys/sqlx", branch = "work-branch", default_features = false, features = ["all-types", "runtime-tokio"], optional = true}
+sqlx = { git = "https://github.com/pimeys/sqlx", branch = "work-branch", default_features = false, features = ["all-types"], optional = true}
 
 uuid = { version = "0.8", optional = true }
 chrono = { version = "0.4", optional = true }
@@ -77,7 +79,7 @@ serde_json = { version = "1.0.48", optional = true }
 base64 = { version = "0.11.0", optional = true }
 lru-cache = { version = "0.1", optional = true }
 
-tiberius = { version = "0.4", optional = true, features = ["rust_decimal", "sql-browser-tokio", "chrono"] }
+tiberius = { version = "0.4", optional = true, features = ["rust_decimal", "chrono"] }
 
 log = { version = "0.4", features = ["release_max_level_trace"] }
 tracing = { version = "0.1", optional = true }
@@ -87,6 +89,7 @@ mobc = { version = "0.5.7", optional = true }
 bytes = { version = "0.5", optional = true }
 tokio = { version = "0.2", features = ["rt-threaded", "macros", "sync"], optional = true}
 tokio-util = { version = "0.3", features = ["compat"], optional = true }
+async-std = { version = "1.6.2", optional = true }
 serde = { version = "1.0", optional = true }
 bit-vec = { version = "0.6.1", optional = true }
 ipnetwork = { version = "0.16.0", optional = true }

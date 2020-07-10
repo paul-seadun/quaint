@@ -225,10 +225,22 @@ impl From<mobc::Error<Error>> for Error {
     }
 }
 
-#[cfg(any(feature = "postgresql", feature = "mysql"))]
+#[cfg(feature = "runtime-tokio")]
 impl From<tokio::time::Elapsed> for Error {
     fn from(_: tokio::time::Elapsed) -> Self {
-        let kind = ErrorKind::Timeout("tokio timeout".into());
+        let kind = ErrorKind::Timeout("Socket".into());
+
+        let mut builder = Error::builder(kind);
+        builder.set_original_message("Query timed out.");
+
+        builder.build()
+    }
+}
+
+#[cfg(feature = "runtime-async-std")]
+impl From<async_std::future::TimeoutError> for Error {
+    fn from(_: async_std::future::TimeoutError) -> Self {
+        let kind = ErrorKind::Timeout("Socket".into());
 
         let mut builder = Error::builder(kind);
         builder.set_original_message("Query timed out.");

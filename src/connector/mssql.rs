@@ -12,8 +12,6 @@ pub use config::*;
 use futures::lock::Mutex;
 use std::{convert::TryFrom, time::Duration};
 use tiberius::*;
-use tokio::net::TcpStream;
-use tokio_util::compat::{Compat, Tokio02AsyncWriteCompatExt};
 
 #[async_trait]
 impl TransactionCapable for Mssql {
@@ -25,17 +23,41 @@ impl TransactionCapable for Mssql {
 /// A connector interface for the PostgreSQL database.
 #[derive(Debug)]
 pub struct Mssql {
-    client: Mutex<Client<Compat<TcpStream>>>,
+    #[cfg(feature = "runtime-tokio")]
+    client: Mutex<Client<tokio_util::compat::Compat<tokio::net::TcpStream>>>,
+    #[cfg(feature = "runtime-async-std")]
+    client: Mutex<Client<async_std::net::TcpStream>>,
+
     url: MssqlUrl,
     socket_timeout: Option<Duration>,
 }
 
 impl Mssql {
+    #[cfg(feature = "runtime-tokio")]
     pub async fn new(url: MssqlUrl) -> crate::Result<Self> {
+        use tokio::net::TcpStream;
+        use tokio_util::compat::Tokio02AsyncWriteCompatExt;
+
+        let socket_timeout = url.socket_timeout();
         let config = Config::from_ado_string(&url.connection_string())?;
+
         let tcp = TcpStream::connect_named(&config).await?;
         let client = Client::connect(config, tcp.compat_write()).await?;
+
+        Ok(Self {
+            client: Mutex::new(client),
+            url,
+            socket_timeout,
+        })
+    }
+
+    #[cfg(feature = "runtime-async-std")]
+    pub async fn new(url: MssqlUrl) -> crate::Result<Self> {
         let socket_timeout = url.socket_timeout();
+        let config = Config::from_ado_string(&url.connection_string())?;
+
+        let tcp = async_std::net::TcpStream::connect_named(&config).await?;
+        let client = Client::connect(config, tcp).await?;
 
         Ok(Self {
             client: Mutex::new(client),
