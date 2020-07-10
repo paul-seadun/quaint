@@ -708,6 +708,14 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
                 Value::Time(time_opt)
             }
 
+            #[cfg(all(feature = "chrono-0_4", feature = "array"))]
+            ti if <chrono::NaiveDateTime as Type<Postgres>>::compatible(ti) => {
+                let naive: Option<chrono::NaiveDateTime> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+                let dt = naive.map(|d| chrono::DateTime::<chrono::Utc>::from_utc(d, chrono::Utc));
+
+                Value::DateTime(dt)
+            }
+
             #[cfg(feature = "chrono-0_4")]
             ti if <sqlx::postgres::types::PgTimeTz as Type<Postgres>>::compatible(ti) => {
                 let timetz_opt: Option<PgTimeTz> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
@@ -871,6 +879,19 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
                     Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
 
                 Value::Array(ary_opt.map(|ary| ary.into_iter().map(Value::date).collect()))
+            }
+
+            #[cfg(all(feature = "chrono-0_4", feature = "array"))]
+            ti if <Vec<chrono::NaiveDateTime> as Type<Postgres>>::compatible(ti) => {
+                let ary_opt: Option<Vec<chrono::NaiveDateTime>> =
+                    Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+
+                Value::Array(ary_opt.map(|ary| {
+                    ary.into_iter()
+                        .map(|d| chrono::DateTime::<chrono::Utc>::from_utc(d, chrono::Utc))
+                        .map(Value::datetime)
+                        .collect()
+                }))
             }
 
             #[cfg(all(feature = "chrono-0_4", feature = "array"))]
