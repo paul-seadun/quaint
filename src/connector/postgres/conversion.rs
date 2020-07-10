@@ -98,9 +98,14 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
                         match val {
                             Some(s) => {
                                 let bit = string_to_bits(&s)?;
-                                bits.push(Some(bit));
+                                bits.push(bit);
                             }
-                            None => bits.push(None),
+                            None => {
+                                let msg = "Non-string parameter when storing a BIT[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
                         }
                     }
 
@@ -112,7 +117,22 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             #[cfg(feature = "array")]
             (Value::Array(ary_opt), Some("INT2[]")) => match ary_opt {
                 Some(ary) => {
-                    let ints: Vec<_> = ary.into_iter().map(|val| val.as_i64().map(|i| i as i16)).collect();
+                    let mut ints = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.as_i64().map(|i| i as i16)) {
+                        match val {
+                            Some(int) => {
+                                ints.push(int);
+                            }
+                            None => {
+                                let msg = "Non-integer parameter when storing an INT2[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
                     self.bind(ints)
                 }
                 None => self.bind(Option::<Vec<i16>>::None),
@@ -121,7 +141,22 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             #[cfg(feature = "array")]
             (Value::Array(ary_opt), Some("INT4[]")) => match ary_opt {
                 Some(ary) => {
-                    let ints: Vec<_> = ary.into_iter().map(|val| val.as_i64().map(|i| i as i32)).collect();
+                    let mut ints = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.as_i64().map(|i| i as i32)) {
+                        match val {
+                            Some(int) => {
+                                ints.push(int);
+                            }
+                            None => {
+                                let msg = "Non-integer parameter when storing an INT4[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
                     self.bind(ints)
                 }
                 None => self.bind(Option::<Vec<i32>>::None),
@@ -130,7 +165,22 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             #[cfg(feature = "array")]
             (Value::Array(ary_opt), Some("INT8[]")) => match ary_opt {
                 Some(ary) => {
-                    let ints: Vec<_> = ary.into_iter().map(|val| val.as_i64().map(|i| i as i64)).collect();
+                    let mut ints = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.as_i64()) {
+                        match val {
+                            Some(int) => {
+                                ints.push(int);
+                            }
+                            None => {
+                                let msg = "Non-integer parameter when storing an INT8[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
                     self.bind(ints)
                 }
                 None => self.bind(Option::<Vec<i64>>::None),
@@ -139,7 +189,22 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             #[cfg(feature = "array")]
             (Value::Array(ary_opt), Some("OID[]")) => match ary_opt {
                 Some(ary) => {
-                    let ints: Vec<_> = ary.into_iter().map(|val| val.as_i64().map(|i| i as u32)).collect();
+                    let mut ints = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.as_i64().map(|i| i as u32)) {
+                        match val {
+                            Some(int) => {
+                                ints.push(int);
+                            }
+                            None => {
+                                let msg = "Non-integer parameter when storing an OID[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
                     self.bind(ints)
                 }
                 None => self.bind(Option::<Vec<u32>>::None),
@@ -148,7 +213,22 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             #[cfg(feature = "array")]
             (Value::Array(ary_opt), Some("FLOAT4[]")) => match ary_opt {
                 Some(ary) => {
-                    let floats: Vec<_> = ary.into_iter().map(|val| val.as_f64().map(|i| i as f32)).collect();
+                    let mut floats = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.as_f64().map(|i| i as f32)) {
+                        match val {
+                            Some(float) => {
+                                floats.push(float);
+                            }
+                            None => {
+                                let msg = "Non-float parameter when storing a FLOAT4[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
                     self.bind(floats)
                 }
                 None => self.bind(Option::<Vec<f32>>::None),
@@ -157,7 +237,22 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             #[cfg(feature = "array")]
             (Value::Array(ary_opt), Some("FLOAT8[]")) => match ary_opt {
                 Some(ary) => {
-                    let floats: Vec<_> = ary.into_iter().map(|val| val.as_f64()).collect();
+                    let mut floats = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.as_f64()) {
+                        match val {
+                            Some(float) => {
+                                floats.push(float);
+                            }
+                            None => {
+                                let msg = "Non-float parameter when storing a FLOAT8[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
                     self.bind(floats)
                 }
                 None => self.bind(Option::<Vec<f64>>::None),
@@ -166,7 +261,22 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             #[cfg(feature = "array")]
             (Value::Array(ary_opt), Some("BOOL[]")) => match ary_opt {
                 Some(ary) => {
-                    let boos: Vec<_> = ary.into_iter().map(|val| val.as_bool()).collect();
+                    let mut boos = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.as_bool()) {
+                        match val {
+                            Some(boo) => {
+                                boos.push(boo);
+                            }
+                            None => {
+                                let msg = "Non-boolean parameter when storing a BOOL[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
                     self.bind(boos)
                 }
                 None => self.bind(Option::<Vec<bool>>::None),
@@ -175,8 +285,23 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             #[cfg(all(feature = "array", feature = "chrono-0_4"))]
             (Value::Array(ary_opt), Some("TIMESTAMPTZ[]")) => match ary_opt {
                 Some(ary) => {
-                    let dts: Vec<_> = ary.into_iter().map(|val| val.as_datetime()).collect();
-                    self.bind(dts)
+                    let mut vals = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.as_datetime()) {
+                        match val {
+                            Some(val) => {
+                                vals.push(val);
+                            }
+                            None => {
+                                let msg = "Non-datetime parameter when storing a TIMESTAMPTZ[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
+                    self.bind(vals)
                 }
                 None => self.bind(Option::<Vec<chrono::DateTime<chrono::Utc>>>::None),
             },
@@ -184,11 +309,23 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             #[cfg(all(feature = "array", feature = "chrono-0_4"))]
             (Value::Array(ary_opt), Some("TIMESTAMP[]")) => match ary_opt {
                 Some(ary) => {
-                    let dts: Vec<_> = ary
-                        .into_iter()
-                        .map(|val| val.as_datetime().map(|dt| dt.naive_utc()))
-                        .collect();
-                    self.bind(dts)
+                    let mut vals = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.as_datetime()) {
+                        match val {
+                            Some(val) => {
+                                vals.push(val.naive_utc());
+                            }
+                            None => {
+                                let msg = "Non-datetime parameter when storing a TIMESTAMP[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
+                    self.bind(vals)
                 }
                 None => self.bind(Option::<Vec<chrono::NaiveDateTime>>::None),
             },
@@ -196,8 +333,23 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             #[cfg(all(feature = "array", feature = "chrono-0_4"))]
             (Value::Array(ary_opt), Some("DATE[]")) => match ary_opt {
                 Some(ary) => {
-                    let dates: Vec<_> = ary.into_iter().map(|val| val.as_date()).collect();
-                    self.bind(dates)
+                    let mut vals = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.as_date()) {
+                        match val {
+                            Some(val) => {
+                                vals.push(val);
+                            }
+                            None => {
+                                let msg = "Non-date parameter when storing a DATE[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
+                    self.bind(vals)
                 }
                 None => self.bind(Option::<Vec<chrono::NaiveDate>>::None),
             },
@@ -205,8 +357,23 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             #[cfg(all(feature = "array", feature = "chrono-0_4"))]
             (Value::Array(ary_opt), Some("TIME[]")) => match ary_opt {
                 Some(ary) => {
-                    let times: Vec<_> = ary.into_iter().map(|val| val.as_time()).collect();
-                    self.bind(times)
+                    let mut vals = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.as_time()) {
+                        match val {
+                            Some(val) => {
+                                vals.push(val);
+                            }
+                            None => {
+                                let msg = "Non-time parameter when storing a TIME[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
+                    self.bind(vals)
                 }
                 None => self.bind(Option::<Vec<chrono::NaiveTime>>::None),
             },
@@ -214,15 +381,24 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             #[cfg(all(feature = "array", feature = "chrono-0_4"))]
             (Value::Array(ary_opt), Some("TIMETZ[]")) => match ary_opt {
                 Some(ary) => {
-                    let times: Vec<_> = ary
-                        .into_iter()
-                        .map(|val| {
-                            val.as_datetime()
-                                .map(|dt| PgTimeTz::new(dt.time(), chrono::FixedOffset::east(0)))
-                        })
-                        .collect();
+                    let mut vals = Vec::with_capacity(ary.len());
 
-                    self.bind(times)
+                    for val in ary.into_iter().map(|v| v.as_datetime()) {
+                        match val {
+                            Some(val) => {
+                                let timetz = PgTimeTz::new(val.time(), chrono::FixedOffset::east(0));
+                                vals.push(timetz);
+                            }
+                            None => {
+                                let msg = "Non-time parameter when storing a TIMETZ[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
+                    self.bind(vals)
                 }
                 None => self.bind(Option::<Vec<PgTimeTz>>::None),
             },
@@ -230,8 +406,23 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             #[cfg(all(feature = "array", feature = "json-1"))]
             (Value::Array(ary_opt), Some("JSON[]")) => match ary_opt {
                 Some(ary) => {
-                    let jsons: Vec<_> = ary.into_iter().map(|val| val.into_json().map(Json)).collect();
-                    self.bind(jsons)
+                    let mut vals = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.into_json()) {
+                        match val {
+                            Some(val) => {
+                                vals.push(Json(val));
+                            }
+                            None => {
+                                let msg = "Non-json parameter when storing a JSON[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
+                    self.bind(vals)
                 }
                 None => self.bind(Option::<Vec<Json<serde_json::Value>>>::None),
             },
@@ -239,8 +430,23 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             #[cfg(feature = "array")]
             (Value::Array(ary_opt), Some("CHAR[]")) => match ary_opt {
                 Some(ary) => {
-                    let chars: Vec<_> = ary.into_iter().map(|val| val.as_char().map(|c| c as i8)).collect();
-                    self.bind(chars)
+                    let mut vals = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.as_char()) {
+                        match val {
+                            Some(val) => {
+                                vals.push(val as i8);
+                            }
+                            None => {
+                                let msg = "Non-char parameter when storing a CHAR[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
+                    self.bind(vals)
                 }
                 None => self.bind(Option::<Vec<i8>>::None),
             },
@@ -248,8 +454,23 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             #[cfg(any(feature = "array", feature = "uuid-0_8"))]
             (Value::Array(ary_opt), Some("UUID[]")) => match ary_opt {
                 Some(ary) => {
-                    let uuids: Vec<_> = ary.into_iter().map(|val| val.as_uuid()).collect();
-                    self.bind(uuids)
+                    let mut vals = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.as_uuid()) {
+                        match val {
+                            Some(val) => {
+                                vals.push(val);
+                            }
+                            None => {
+                                let msg = "Non-uuid parameter when storing a UUID[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
+                    self.bind(vals)
                 }
                 None => self.bind(Option::<Vec<uuid::Uuid>>::None),
             },
@@ -258,8 +479,23 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             (Value::Array(ary_opt), t) if t == Some("TEXT[]") || t == Some("VARCHAR[]") || t == Some("NAME[]") => {
                 match ary_opt {
                     Some(ary) => {
-                        let strings: Vec<_> = ary.into_iter().map(|val| val.into_string()).collect();
-                        self.bind(strings)
+                        let mut vals = Vec::with_capacity(ary.len());
+
+                        for val in ary.into_iter().map(|v| v.into_string()) {
+                            match val {
+                                Some(val) => {
+                                    vals.push(val);
+                                }
+                                None => {
+                                    let msg = "Non-string parameter when storing a string array";
+                                    let kind = ErrorKind::conversion(msg);
+
+                                    Err(Error::builder(kind).build())?
+                                }
+                            }
+                        }
+
+                        self.bind(vals)
                     }
                     None => self.bind(Option::<Vec<uuid::Uuid>>::None),
                 }
@@ -280,9 +516,14 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
                                     Error::builder(kind).build()
                                 })?;
 
-                                ips.push(Some(ip));
+                                ips.push(ip);
                             }
-                            None => ips.push(None),
+                            None => {
+                                let msg = "Non-string parameter when storing an IP array";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
                         }
                     }
 
