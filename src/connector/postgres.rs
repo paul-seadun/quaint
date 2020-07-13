@@ -5,14 +5,13 @@ mod error;
 use crate::{
     ast::{Query, Value},
     connector::{bind::Bind, metrics, queryable::*, timeout::timeout, ResultSet, Transaction},
-    error::Error,
     visitor::{self, Visitor},
 };
 use async_trait::async_trait;
 pub use config::*;
 use either::Either;
-use futures::{lock::Mutex, TryStreamExt};
-use sqlx::{Column as _, Connect, Executor, PgConnection, Row as _};
+use futures::lock::Mutex;
+use sqlx::{Column as _, Connect, Executor, PgConnection};
 use std::time::Duration;
 
 /// A connector interface for the PostgreSQL database.
@@ -71,6 +70,7 @@ impl Queryable for PostgreSql {
         metrics::query_new("postgres.query_raw", sql, params, |params| async move {
             let mut conn = self.connection.lock().await;
             let describe = timeout(self.socket_timeout, conn.describe(sql)).await?;
+            let columns = describe.columns().into_iter().map(|c| c.name().to_string()).collect();
 
             let mut query = sqlx::query(sql);
 
@@ -90,22 +90,10 @@ impl Queryable for PostgreSql {
                 }
             };
 
-            let mut columns = Vec::new();
-            let mut rows = Vec::new();
-
-            timeout(self.socket_timeout, async {
-                let mut stream = query.fetch(&mut *conn);
-
-                while let Some(row) = stream.try_next().await? {
-                    if columns.is_empty() {
-                        columns = row.columns().iter().map(|c| c.name().to_string()).collect();
-                    }
-
-                    rows.push(conversion::map_row(row)?);
-                }
-
-                Ok::<(), Error>(())
-            })
+            let rows = timeout(
+                self.socket_timeout,
+                query.try_map(conversion::map_row).fetch_all(&mut *conn),
+            )
             .await?;
 
             Ok(ResultSet::new(columns, rows))
