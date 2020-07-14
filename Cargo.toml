@@ -22,7 +22,7 @@ documentation = "https://docs.rs/quaint/"
 features = [ "full", "serde-support", "json-1", "uuid-0_8", "chrono-0_4", "array" ]
 
 [features]
-default = ["runtime-tokio"]
+default = []
 
 full = ["pooled", "json-1", "postgresql", "uuid-0_8", "chrono-0_4", "mysql", "mssql", "sqlite"]
 full-postgresql = ["pooled", "postgresql", "json-1", "uuid-0_8", "chrono-0_4", "array"]
