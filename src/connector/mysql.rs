@@ -8,11 +8,11 @@ pub use config::*;
 
 use async_trait::async_trait;
 use futures::{lock::Mutex, TryStreamExt};
-use sqlx::{Column, Connect, MySqlConnection, Row};
+use sqlx::{Column, Connection, Done, MySqlConnection, Row};
 use std::time::Duration;
 
 use crate::{
-    ast::{Query, Value},
+    ast::{Insert, Query, Value},
     connector::{bind::Bind, metrics, queryable::*, timeout::timeout, ResultSet},
     error::Error,
     visitor::{self, Visitor},
@@ -97,9 +97,30 @@ impl Queryable for Mysql {
             }
 
             let mut conn = self.connection.lock().await;
-            let changes = timeout(self.socket_timeout, query.execute(&mut *conn)).await?;
+            let done = timeout(self.socket_timeout, query.execute(&mut *conn)).await?;
 
-            Ok(changes)
+            Ok(done.rows_affected())
+        })
+        .await
+    }
+
+    async fn insert(&self, q: Insert<'_>) -> crate::Result<ResultSet> {
+        let (sql, params) = visitor::Mysql::build(q)?;
+
+        metrics::query_new("mysql.execute_raw", &sql, params, |params| async {
+            let mut query = sqlx::query(&sql);
+
+            for param in params.into_iter() {
+                query = query.bind_value(param, None)?;
+            }
+
+            let mut conn = self.connection.lock().await;
+            let done = timeout(self.socket_timeout, query.execute(&mut *conn)).await?;
+
+            let mut result_set = ResultSet::default();
+            result_set.set_last_insert_id(done.last_insert_id());
+
+            Ok(result_set)
         })
         .await
     }

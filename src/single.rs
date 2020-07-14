@@ -165,6 +165,10 @@ impl Queryable for Quaint {
         self.inner.execute(q).await
     }
 
+    async fn insert(&self, q: ast::Insert<'_>) -> crate::Result<connector::ResultSet> {
+        self.inner.insert(q).await
+    }
+
     async fn query_raw(&self, sql: &str, params: Vec<ast::Value<'_>>) -> crate::Result<connector::ResultSet> {
         self.inner.query_raw(sql, params).await
     }

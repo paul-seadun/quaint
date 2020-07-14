@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn equality_with_a_json_value() {
         let expected = expected_values(
-            r#"SELECT "users".* FROM "users" WHERE "jsonField"::jsonb = $1::jsonb"#,
+            r#"SELECT "users".* FROM "users" WHERE "jsonField"::jsonb = $1"#,
             vec![serde_json::json!({"a": "b"})],
         );
 
@@ -388,7 +388,7 @@ mod tests {
     #[test]
     fn difference_with_a_json_value() {
         let expected = expected_values(
-            r#"SELECT "users".* FROM "users" WHERE "jsonField"::jsonb <> $1::jsonb"#,
+            r#"SELECT "users".* FROM "users" WHERE "jsonField"::jsonb <> $1"#,
             vec![serde_json::json!({"a": "b"})],
         );
 

@@ -61,4 +61,8 @@ impl<'a> Queryable for Transaction<'a> {
     async fn version(&self) -> crate::Result<Option<String>> {
         self.inner.version().await
     }
+
+    async fn insert(&self, q: Insert<'_>) -> crate::Result<ResultSet> {
+        self.inner.insert(q).await
+    }
 }

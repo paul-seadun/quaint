@@ -291,7 +291,7 @@ impl From<sqlx::Error> for Error {
             }
 
             sqlx::Error::Io(io_error) => Error::builder(ErrorKind::ConnectionError(io_error.into())).build(),
-            sqlx::Error::ParseConnectOptions(_) => Error::builder(ErrorKind::InvalidConnectionArguments).build(),
+            sqlx::Error::Configuration(_) => Error::builder(ErrorKind::InvalidConnectionArguments).build(),
             sqlx::Error::Tls(e) => Error::builder(ErrorKind::TlsError { message: e.to_string() }).build(),
 
             sqlx::Error::Protocol(s) => {

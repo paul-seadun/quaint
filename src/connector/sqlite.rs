@@ -3,7 +3,7 @@ mod conversion;
 mod error;
 
 use crate::{
-    ast::{Query, Value},
+    ast::{Insert, Query, Value},
     connector::{bind::Bind, metrics, queryable::*, timeout::timeout, ResultSet},
     error::Error,
     visitor::{self, Visitor},
@@ -13,7 +13,7 @@ pub use config::*;
 use futures::{lock::Mutex, TryStreamExt};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteRow},
-    Column as _, Connect, Row as _, SqliteConnection,
+    Column as _, Connection, Done, Row as _, SqliteConnection,
 };
 use std::{collections::HashSet, convert::TryFrom, time::Duration};
 
@@ -84,6 +84,27 @@ impl Queryable for Sqlite {
         self.execute_raw(&sql, params).await
     }
 
+    async fn insert(&self, q: Insert<'_>) -> crate::Result<ResultSet> {
+        let (sql, params) = visitor::Mysql::build(q)?;
+
+        metrics::query_new("sqlite.execute_raw", &sql, params, |params| async {
+            let mut query = sqlx::query(&sql);
+
+            for param in params.into_iter() {
+                query = query.bind_value(param, None)?;
+            }
+
+            let mut conn = self.connection.lock().await;
+            let done = timeout(self.socket_timeout, query.execute(&mut *conn)).await?;
+
+            let mut result_set = ResultSet::default();
+            result_set.set_last_insert_id(done.last_insert_rowid() as u64);
+
+            Ok(result_set)
+        })
+        .await
+    }
+
     async fn query_raw(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<ResultSet> {
         metrics::query_new("sqlite.query_raw", sql, params, move |params| async move {
             let mut query = sqlx::query(sql);
@@ -125,9 +146,9 @@ impl Queryable for Sqlite {
             }
 
             let mut conn = self.connection.lock().await;
-            let changes = timeout(self.socket_timeout, query.execute(&mut *conn)).await?;
+            let done = timeout(self.socket_timeout, query.execute(&mut *conn)).await?;
 
-            Ok(changes)
+            Ok(done.rows_affected())
         })
         .await
     }
@@ -473,9 +494,9 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn upper_fun() {
-        let conn = Sqlite::try_from("file:db/test.db").unwrap();
+        let conn = Sqlite::new("file:db/test.db").await.unwrap();
         let select = Select::default().value(upper("foo").alias("val"));
 
         let res = conn.query(select.into()).await.unwrap();
@@ -485,9 +506,9 @@ mod tests {
         assert_eq!(Some("FOO"), val);
     }
 
-    #[tokio::test]
+    #[tokio::test(threaded_scheduler)]
     async fn lower_fun() {
-        let conn = Sqlite::try_from("file:db/test.db").unwrap();
+        let conn = Sqlite::new("file:db/test.db").await.unwrap();
         let select = Select::default().value(lower("BAR").alias("val"));
 
         let res = conn.query(select.into()).await.unwrap();

@@ -3,7 +3,7 @@ mod conversion;
 mod error;
 
 use crate::{
-    ast::{Query, Value},
+    ast::{Insert, Query, Value},
     connector::{metrics, queryable::*, timeout::timeout, ResultSet, Transaction},
     visitor::{self, Visitor},
 };
@@ -124,6 +124,10 @@ impl Queryable for Mssql {
             Ok(changes)
         })
         .await
+    }
+
+    async fn insert(&self, q: Insert<'_>) -> crate::Result<ResultSet> {
+        self.query(q.into()).await
     }
 
     async fn raw_cmd(&self, cmd: &str) -> crate::Result<()> {

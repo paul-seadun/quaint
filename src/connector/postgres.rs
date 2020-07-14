@@ -3,7 +3,7 @@ mod conversion;
 mod error;
 
 use crate::{
-    ast::{Query, Value},
+    ast::{Insert, Query, Value},
     connector::{bind::Bind, metrics, queryable::*, timeout::timeout, ResultSet, Transaction},
     visitor::{self, Visitor},
 };
@@ -11,7 +11,7 @@ use async_trait::async_trait;
 pub use config::*;
 use either::Either;
 use futures::lock::Mutex;
-use sqlx::{Column as _, Connect, Executor, PgConnection};
+use sqlx::{Column as _, Connection, Done, Executor, PgConnection};
 use std::time::Duration;
 
 /// A connector interface for the PostgreSQL database.
@@ -66,6 +66,10 @@ impl Queryable for PostgreSql {
         self.execute_raw(sql.as_str(), params).await
     }
 
+    async fn insert(&self, q: Insert<'_>) -> crate::Result<ResultSet> {
+        self.query(q.into()).await
+    }
+
     async fn query_raw(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<ResultSet> {
         metrics::query_new("postgres.query_raw", sql, params, |params| async move {
             let mut conn = self.connection.lock().await;
@@ -110,9 +114,9 @@ impl Queryable for PostgreSql {
             }
 
             let mut conn = self.connection.lock().await;
-            let changes = query.execute(&mut *conn).await?;
+            let done = query.execute(&mut *conn).await?;
 
-            Ok(changes)
+            Ok(done.rows_affected())
         })
         .await
     }

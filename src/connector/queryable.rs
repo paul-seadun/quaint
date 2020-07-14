@@ -40,13 +40,15 @@ pub trait Queryable: Send + Sync {
     /// parsing or normalization.
     async fn version(&self) -> crate::Result<Option<String>>;
 
+    /// Execute an `INSERT` query.
+    ///
+    /// A special case where `INSERT` could return data in PostgreSQL or SQL
+    /// Server should be handled with the `insert` method. For other databases
+    /// the `ResultSet` is empty but might contain the last insert id.
+    async fn insert(&self, q: Insert<'_>) -> crate::Result<ResultSet>;
+
     /// Execute a `SELECT` query.
     async fn select(&self, q: Select<'_>) -> crate::Result<ResultSet> {
-        self.query(q.into()).await
-    }
-
-    /// Execute an `INSERT` query.
-    async fn insert(&self, q: Insert<'_>) -> crate::Result<ResultSet> {
         self.query(q.into()).await
     }
 
