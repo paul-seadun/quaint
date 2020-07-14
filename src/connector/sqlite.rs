@@ -57,8 +57,14 @@ impl Sqlite {
             .collect();
 
         if !databases.contains(db_name) {
+            let path = self.file_path.as_str();
+
+            if !std::path::Path::new(path).exists() {
+                std::fs::File::create(path)?;
+            }
+
             sqlx::query("ATTACH DATABASE ? AS ?")
-                .bind(self.file_path.as_str())
+                .bind(path)
                 .bind(db_name)
                 .execute(&mut *conn)
                 .await?;
