@@ -3,15 +3,11 @@ use crate::{
     connector::bind::Bind,
     error::{Error, ErrorKind},
 };
-use rust_decimal::{
-    prelude::{FromPrimitive, ToPrimitive},
-    Decimal,
-};
+use rust_decimal::prelude::ToPrimitive;
 use sqlx::{
-    decode::Decode,
     query::Query,
     sqlite::{SqliteArguments, SqliteRow, SqliteTypeInfo},
-    Row, Sqlite, Type, TypeInfo, ValueRef,
+    Column, Row, Sqlite, TypeInfo,
 };
 use std::{borrow::Cow, convert::TryFrom};
 
@@ -104,96 +100,36 @@ pub fn map_row<'a>(row: SqliteRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
     let mut result = Vec::with_capacity(row.len());
 
     for i in 0..row.len() {
-        let value_ref = row.try_get_raw(i)?;
+        let value = match row.columns()[i].type_info().name() {
+            "INTEGER" => Value::Integer(row.get_unchecked(i)),
 
-        let decode_err = |source| sqlx::Error::ColumnDecode {
-            index: format!("{}", i),
-            source,
-        };
-
-        let value = match value_ref.type_info() {
-            #[cfg(feature = "chrono-0_4")]
-            ti if <i64 as Type<Sqlite>>::compatible(ti) && ti.name() == "DATETIME" => {
-                let int_opt: Option<i64> = Decode::<Sqlite>::decode(value_ref).map_err(decode_err)?;
-
-                let dt = int_opt.map(|ts| {
-                    let nsecs = ((ts % 1000) * 1_000_000) as u32;
-                    let secs = (ts / 1000) as i64;
-                    let naive = chrono::NaiveDateTime::from_timestamp(secs, nsecs);
-                    chrono::DateTime::from_utc(naive, chrono::Utc)
-                });
-
-                Value::DateTime(dt)
-            }
-
-            #[cfg(feature = "chrono-0_4")]
-            ti if <String as Type<Sqlite>>::compatible(ti) && ti.name() == "DATETIME" => {
-                let str_opt: Option<String> = Decode::<Sqlite>::decode(value_ref).map_err(decode_err)?;
-
-                match str_opt {
-                    Some(dt_string) => {
-                        let dt = chrono::DateTime::parse_from_rfc3339(dt_string.as_str())
-                            .or_else(|_| chrono::DateTime::parse_from_rfc2822(dt_string.as_str()))
-                            .or_else(|_| chrono::DateTime::parse_from_str(dt_string.as_str(), "%Y-%m-%d %H:%M:%S.%f"))
-                            .map_err(|_| {
-                                let msg = "Could not parse a DateTime string from SQLite.";
-                                let kind = ErrorKind::conversion(msg);
-
-                                let mut builder = Error::builder(kind);
-                                builder.set_original_message(msg);
-
-                                sqlx::Error::ColumnDecode {
-                                    index: format!("{}", i),
-                                    source: Box::new(builder.build()),
-                                }
-                            })?;
-
-                        Value::datetime(dt.with_timezone(&chrono::Utc))
-                    }
-                    None => Value::DateTime(None),
-                }
-            }
-
-            ti if <i64 as Type<Sqlite>>::compatible(ti) => {
-                let int_opt = Decode::<Sqlite>::decode(value_ref).map_err(decode_err)?;
-
-                Value::Integer(int_opt)
-            }
-
-            ti if <f32 as Type<Sqlite>>::compatible(ti) => {
-                let f_opt: Option<f32> = Decode::<Sqlite>::decode(value_ref).map_err(decode_err)?;
-
-                Value::Real(f_opt.map(|f| Decimal::from_f32(f).unwrap()))
-            }
-
-            ti if <f64 as Type<Sqlite>>::compatible(ti) => {
-                let f_opt: Option<f64> = Decode::<Sqlite>::decode(value_ref).map_err(decode_err)?;
-
-                Value::Real(f_opt.map(|f| Decimal::from_f64(f).unwrap()))
-            }
-
-            ti if <String as Type<Sqlite>>::compatible(ti) => {
-                let string_opt: Option<String> = Decode::<Sqlite>::decode(value_ref).map_err(decode_err)?;
-
+            "TEXT" => {
+                let string_opt: Option<String> = row.get_unchecked(i);
                 Value::Text(string_opt.map(Cow::from))
             }
 
-            ti if <Vec<u8> as Type<Sqlite>>::compatible(ti) => {
-                let bytes_opt: Option<Vec<u8>> = Decode::<Sqlite>::decode(value_ref).map_err(decode_err)?;
+            "REAL" => {
+                let f: Option<f64> = row.get_unchecked(i);
+                match f {
+                    Some(f) => Value::from(f),
+                    None => Value::Real(None),
+                }
+            }
 
+            "BLOB" => {
+                let bytes_opt: Option<Vec<u8>> = row.get_unchecked(i);
                 Value::Bytes(bytes_opt.map(Cow::from))
             }
 
-            ti if <bool as Type<Sqlite>>::compatible(ti) => {
-                let bool_opt = Decode::<Sqlite>::decode(value_ref).map_err(decode_err)?;
-
+            "BOOLEAN" => {
+                let bool_opt = row.get_unchecked(i);
                 Value::Boolean(bool_opt)
             }
 
-            ti if ti.name() == "NULL" => Value::Integer(None),
+            "NULL" => Value::Integer(None),
 
             ti => {
-                let msg = format!("Type {} is not yet supported in the SQLite connector.", ti.name());
+                let msg = format!("Type {} is not yet supported in the SQLite connector.", ti);
                 let kind = ErrorKind::conversion(msg.clone());
 
                 let mut builder = Error::builder(kind);

@@ -11,11 +11,10 @@ use rust_decimal::{
 #[cfg(feature = "chrono-0_4")]
 use sqlx::postgres::types::PgTimeTz;
 use sqlx::{
-    decode::Decode,
     postgres::{types::PgMoney, PgArguments, PgRow, PgTypeInfo},
     query::Query,
     types::Json,
-    Postgres, Row, Type, TypeInfo, ValueRef,
+    Column, Postgres, Row, Type, TypeInfo,
 };
 use std::borrow::Cow;
 
@@ -582,47 +581,34 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
     let mut result = Vec::with_capacity(row.len());
 
     for i in 0..row.len() {
-        let value_ref = row.try_get_raw(i)?;
+        let type_info = row.columns()[i].type_info();
 
-        let decode_err = |source| sqlx::Error::ColumnDecode {
-            index: format!("{}", i),
-            source,
-        };
-
-        let value = match value_ref.type_info() {
+        let value = match type_info.name() {
             // Singular types from here down, arrays after these.
-            ti if <i8 as Type<Postgres>>::compatible(ti) => {
-                let int_opt: Option<i8> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+            "CHAR" => {
+                let int_opt: Option<i8> = row.get_unchecked(i);
+                Value::Char(int_opt.map(|i| (i as u8) as char))
+            }
 
+            "INT2" => {
+                let int_opt: Option<i16> = row.get_unchecked(i);
                 Value::Integer(int_opt.map(|i| i as i64))
             }
 
-            ti if <i16 as Type<Postgres>>::compatible(ti) => {
-                let int_opt: Option<i16> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
+            "INT4" => {
+                let int_opt: Option<i32> = row.get_unchecked(i);
                 Value::Integer(int_opt.map(|i| i as i64))
             }
 
-            ti if <i32 as Type<Postgres>>::compatible(ti) => {
-                let int_opt: Option<i32> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+            "INT8" => Value::Integer(row.get_unchecked(i)),
 
+            "OID" => {
+                let int_opt: Option<u32> = row.get_unchecked(i);
                 Value::Integer(int_opt.map(|i| i as i64))
             }
 
-            ti if <i64 as Type<Postgres>>::compatible(ti) => {
-                let int_opt = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
-                Value::Integer(int_opt)
-            }
-
-            ti if <u32 as Type<Postgres>>::compatible(ti) => {
-                let int_opt: Option<u32> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
-                Value::Integer(int_opt.map(|i| i as i64))
-            }
-
-            ti if <PgMoney as Type<Postgres>>::compatible(ti) => {
-                let money_opt: Option<PgMoney> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+            "MONEY" => {
+                let money_opt: Option<PgMoney> = row.get_unchecked(i);
 
                 // We assume the default setting of 2 decimals.
                 let decimal_opt = money_opt.map(|money| money.to_decimal(2));
@@ -630,95 +616,57 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
                 Value::Real(decimal_opt)
             }
 
-            ti if <Decimal as Type<Postgres>>::compatible(ti) => {
-                let decimal_opt = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+            "NUMERIC" => Value::Real(row.get_unchecked(i)),
 
-                Value::Real(decimal_opt)
-            }
-
-            ti if <f32 as Type<Postgres>>::compatible(ti) => {
-                let f_opt: Option<f32> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
+            "FLOAT4" => {
+                let f_opt: Option<f32> = row.get_unchecked(i);
                 Value::Real(f_opt.map(|f| Decimal::from_f32(f).unwrap()))
             }
 
-            ti if <f64 as Type<Postgres>>::compatible(ti) => {
-                let f_opt: Option<f64> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
+            "FLOAT8" => {
+                let f_opt: Option<f64> = row.get_unchecked(i);
                 Value::Real(f_opt.map(|f| Decimal::from_f64(f).unwrap()))
             }
 
-            ti if <String as Type<Postgres>>::compatible(ti)
-                && (ti.name() == "TEXT" || ti.name() == "VARCHAR" || ti.name() == "NAME") =>
-            {
-                let string_opt: Option<String> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
+            "TEXT" | "VARCHAR" | "NAME" => {
+                let string_opt: Option<String> = row.get_unchecked(i);
                 Value::Text(string_opt.map(Cow::from))
             }
 
-            ti if <String as Type<Postgres>>::compatible(ti) => {
-                let string_opt: Option<String> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
-                Value::Enum(string_opt.map(Cow::from))
-            }
-
-            ti if <Vec<u8> as Type<Postgres>>::compatible(ti) => {
-                let bytes_opt: Option<Vec<u8>> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
+            "BYTEA" => {
+                let bytes_opt: Option<Vec<u8>> = row.get_unchecked(i);
                 Value::Bytes(bytes_opt.map(Cow::from))
             }
 
-            ti if <bool as Type<Postgres>>::compatible(ti) => {
-                let bool_opt = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+            "BOOL" => Value::Boolean(row.get_unchecked(i)),
 
-                Value::Boolean(bool_opt)
-            }
-
-            ti if <IpNetwork as Type<Postgres>>::compatible(ti) => {
-                let ip_opt: Option<IpNetwork> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
+            "INET" | "CIDR" => {
+                let ip_opt: Option<IpNetwork> = row.get_unchecked(i);
                 Value::Text(ip_opt.map(|ip| format!("{}", ip)).map(Cow::from))
             }
 
             #[cfg(feature = "uuid-0_8")]
-            ti if <uuid::Uuid>::compatible(ti) => {
-                let dt_opt = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
-                Value::Uuid(dt_opt)
-            }
+            "UUID" => Value::Uuid(row.get_unchecked(i)),
 
             #[cfg(feature = "chrono-0_4")]
-            ti if <chrono::DateTime<chrono::Utc> as Type<Postgres>>::compatible(ti) => {
-                let dt_opt = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
-                Value::DateTime(dt_opt)
-            }
+            "TIMESTAMPTZ" => Value::DateTime(row.get_unchecked(i)),
 
             #[cfg(feature = "chrono-0_4")]
-            ti if <chrono::NaiveDate as Type<Postgres>>::compatible(ti) => {
-                let date_opt = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
-                Value::Date(date_opt)
-            }
+            "DATE" => Value::Date(row.get_unchecked(i)),
 
             #[cfg(feature = "chrono-0_4")]
-            ti if <chrono::NaiveTime as Type<Postgres>>::compatible(ti) => {
-                let time_opt = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
-                Value::Time(time_opt)
-            }
+            "TIME" => Value::Time(row.get_unchecked(i)),
 
             #[cfg(all(feature = "chrono-0_4", feature = "array"))]
-            ti if <chrono::NaiveDateTime as Type<Postgres>>::compatible(ti) => {
-                let naive: Option<chrono::NaiveDateTime> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+            "TIMESTAMP" => {
+                let naive: Option<chrono::NaiveDateTime> = row.get_unchecked(i);
                 let dt = naive.map(|d| chrono::DateTime::<chrono::Utc>::from_utc(d, chrono::Utc));
-
                 Value::DateTime(dt)
             }
 
             #[cfg(feature = "chrono-0_4")]
-            ti if <sqlx::postgres::types::PgTimeTz as Type<Postgres>>::compatible(ti) => {
-                let timetz_opt: Option<PgTimeTz> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+            "TIMETZ" => {
+                let timetz_opt: Option<PgTimeTz> = row.get_unchecked(i);
 
                 let dt_opt = timetz_opt.map(|time_tz| {
                     let (time, tz) = time_tz.into_parts();
@@ -734,58 +682,56 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
             }
 
             #[cfg(feature = "json-1")]
-            ti if <serde_json::Value as Type<Postgres>>::compatible(ti) => {
-                let json_opt = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
-                Value::Json(json_opt)
-            }
+            "JSON" | "JSONB" => Value::Json(row.get_unchecked(i)),
 
             #[cfg(feature = "bit-vec")]
-            ti if <bit_vec::BitVec as Type<Postgres>>::compatible(ti) => {
-                let bit_opt: Option<bit_vec::BitVec> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
+            "BIT" | "VARBIT" => {
+                let bit_opt: Option<bit_vec::BitVec> = row.get_unchecked(i);
                 Value::Text(bit_opt.map(bits_to_string).map(Cow::from))
             }
 
             // arrays from here on
             #[cfg(feature = "array")]
-            ti if <Vec<i8> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<i8>> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+            "CHAR[]" => {
+                let ary_opt: Option<Vec<i8>> = row.get_unchecked(i);
 
+                let chars = ary_opt.map(|ary| {
+                    ary.into_iter()
+                        .map(|i| (i as u8) as char)
+                        .map(Value::character)
+                        .collect()
+                });
+
+                Value::Array(chars)
+            }
+
+            #[cfg(feature = "array")]
+            "INT2[]" => {
+                let ary_opt: Option<Vec<i16>> = row.get_unchecked(i);
                 Value::Array(ary_opt.map(|ary| ary.into_iter().map(Value::integer).collect()))
             }
 
             #[cfg(feature = "array")]
-            ti if <Vec<i16> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<i16>> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
+            "INT4[]" => {
+                let ary_opt: Option<Vec<i32>> = row.get_unchecked(i);
                 Value::Array(ary_opt.map(|ary| ary.into_iter().map(Value::integer).collect()))
             }
 
             #[cfg(feature = "array")]
-            ti if <Vec<i32> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<i32>> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
+            "INT8[]" => {
+                let ary_opt: Option<Vec<i64>> = row.get_unchecked(i);
                 Value::Array(ary_opt.map(|ary| ary.into_iter().map(Value::integer).collect()))
             }
 
             #[cfg(feature = "array")]
-            ti if <Vec<i64> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<i64>> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
+            "OID[]" => {
+                let ary_opt: Option<Vec<u32>> = row.get_unchecked(i);
                 Value::Array(ary_opt.map(|ary| ary.into_iter().map(Value::integer).collect()))
             }
 
             #[cfg(feature = "array")]
-            ti if <Vec<u32> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<u32>> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
-                Value::Array(ary_opt.map(|ary| ary.into_iter().map(Value::integer).collect()))
-            }
-
-            #[cfg(feature = "array")]
-            ti if <Vec<PgMoney> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<PgMoney>> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+            "MONEY[]" => {
+                let ary_opt: Option<Vec<PgMoney>> = row.get_unchecked(i);
 
                 // We assume the default setting of 2 decimals.
                 let decs = ary_opt.map(|ary| {
@@ -799,16 +745,16 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
             }
 
             #[cfg(feature = "array")]
-            ti if <Vec<Decimal> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<Decimal>> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+            "NUMERIC[]" => {
+                let ary_opt: Option<Vec<Decimal>> = row.get_unchecked(i);
                 let decs = ary_opt.map(|ary| ary.into_iter().map(Value::real).collect());
 
                 Value::Array(decs)
             }
 
             #[cfg(feature = "array")]
-            ti if <Vec<f32> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<f32>> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+            "FLOAT4[]" => {
+                let ary_opt: Option<Vec<f32>> = row.get_unchecked(i);
 
                 let decs = ary_opt.map(|ary| {
                     ary.into_iter()
@@ -821,8 +767,8 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
             }
 
             #[cfg(feature = "array")]
-            ti if <Vec<f64> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<f64>> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+            "FLOAT8[]" => {
+                let ary_opt: Option<Vec<f64>> = row.get_unchecked(i);
 
                 let decs = ary_opt.map(|ary| {
                     ary.into_iter()
@@ -835,56 +781,40 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
             }
 
             #[cfg(feature = "array")]
-            ti if <Vec<String> as Type<Postgres>>::compatible(ti)
-                && (ti.name() == "TEXT[]" || ti.name() == "VARCHAR[]" || ti.name() == "NAME[]") =>
-            {
-                let ary_opt: Option<Vec<String>> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
+            "TEXT[]" | "VARCHAR[]" | "NAME[]" => {
+                let ary_opt: Option<Vec<String>> = row.get_unchecked(i);
                 Value::Array(ary_opt.map(|ary| ary.into_iter().map(Value::text).collect()))
             }
 
             #[cfg(feature = "array")]
-            ti if <Vec<String> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<String>> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
-                Value::Array(ary_opt.map(|ary| ary.into_iter().map(Value::enum_variant).collect()))
-            }
-
-            #[cfg(feature = "array")]
-            ti if <Vec<bool> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<bool>> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
+            "BOOL[]" => {
+                let ary_opt: Option<Vec<bool>> = row.get_unchecked(i);
                 Value::Array(ary_opt.map(|ary| ary.into_iter().map(Value::boolean).collect()))
             }
 
             #[cfg(feature = "array")]
-            ti if <Vec<IpNetwork> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<IpNetwork>> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+            "CIDR[]" | "INET[]" => {
+                let ary_opt: Option<Vec<IpNetwork>> = row.get_unchecked(i);
                 let strs = ary_opt.map(|ary| ary.into_iter().map(|ip| Value::text(format!("{}", ip))).collect());
 
                 Value::Array(strs)
             }
 
             #[cfg(all(feature = "chrono-0_4", feature = "array"))]
-            ti if <Vec<chrono::DateTime<chrono::Utc>> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<chrono::DateTime<chrono::Utc>>> =
-                    Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
+            "TIMESTAMPTZ[]" => {
+                let ary_opt: Option<Vec<chrono::DateTime<chrono::Utc>>> = row.get_unchecked(i);
                 Value::Array(ary_opt.map(|ary| ary.into_iter().map(Value::datetime).collect()))
             }
 
             #[cfg(all(feature = "chrono-0_4", feature = "array"))]
-            ti if <Vec<chrono::NaiveDate> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<chrono::NaiveDate>> =
-                    Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
+            "DATE[]" => {
+                let ary_opt: Option<Vec<chrono::NaiveDate>> = row.get_unchecked(i);
                 Value::Array(ary_opt.map(|ary| ary.into_iter().map(Value::date).collect()))
             }
 
             #[cfg(all(feature = "chrono-0_4", feature = "array"))]
-            ti if <Vec<chrono::NaiveDateTime> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<chrono::NaiveDateTime>> =
-                    Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+            "TIMESTAMP[]" => {
+                let ary_opt: Option<Vec<chrono::NaiveDateTime>> = row.get_unchecked(i);
 
                 Value::Array(ary_opt.map(|ary| {
                     ary.into_iter()
@@ -895,16 +825,14 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
             }
 
             #[cfg(all(feature = "chrono-0_4", feature = "array"))]
-            ti if <Vec<chrono::NaiveTime> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<chrono::NaiveTime>> =
-                    Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
+            "TIME[]" => {
+                let ary_opt: Option<Vec<chrono::NaiveTime>> = row.get_unchecked(i);
                 Value::Array(ary_opt.map(|ary| ary.into_iter().map(Value::time).collect()))
             }
 
             #[cfg(all(feature = "chrono-0_4", feature = "array"))]
-            ti if <Vec<PgTimeTz> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<PgTimeTz>> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+            "TIMETZ[]" => {
+                let ary_opt: Option<Vec<PgTimeTz>> = row.get_unchecked(i);
 
                 let dts = ary_opt.map(|ary| {
                     ary.into_iter()
@@ -925,47 +853,53 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
             }
 
             #[cfg(all(feature = "json-1", feature = "array"))]
-            ti if <Vec<Json<serde_json::Value>> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<Json<serde_json::Value>>> =
-                    Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
+            "JSON[]" | "JSONB[]" => {
+                let ary_opt: Option<Vec<Json<serde_json::Value>>> = row.get_unchecked(i);
                 let jsons = ary_opt.map(|ary| ary.into_iter().map(|j| Value::json(j.0)).collect());
 
                 Value::Array(jsons)
             }
 
             #[cfg(all(feature = "bit-vec", feature = "array"))]
-            ti if <Vec<bit_vec::BitVec> as Type<Postgres>>::compatible(ti) => {
-                let ary_opt: Option<Vec<bit_vec::BitVec>> =
-                    Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
-
+            "BIT[]" | "VARBIT[]" => {
+                let ary_opt: Option<Vec<bit_vec::BitVec>> = row.get_unchecked(i);
                 let strs = ary_opt.map(|ary| ary.into_iter().map(bits_to_string).map(Value::text).collect());
 
                 Value::Array(strs)
             }
 
             #[cfg(all(feature = "uuid-0_8", feature = "array"))]
-            ti if <Vec<uuid::Uuid>>::compatible(ti) => {
-                let ary_opt: Option<Vec<uuid::Uuid>> = Decode::<Postgres>::decode(value_ref).map_err(decode_err)?;
+            "UUID[]" => {
+                let ary_opt: Option<Vec<uuid::Uuid>> = row.get_unchecked(i);
                 let uuids = ary_opt.map(|ary| ary.into_iter().map(Value::uuid).collect());
 
                 Value::Array(uuids)
             }
 
-            ti => {
-                let msg = format!("Type {} is not yet supported in the PostgreSQL connector.", ti.name());
-                let kind = ErrorKind::conversion(msg.clone());
+            name => match type_info {
+                ti if <String as Type<Postgres>>::compatible(ti) => {
+                    let string_opt: Option<String> = row.get_unchecked(i);
+                    Value::Enum(string_opt.map(Cow::from))
+                }
+                ti if <Vec<String> as Type<Postgres>>::compatible(ti) => {
+                    let ary_opt: Option<Vec<String>> = row.get_unchecked(i);
+                    Value::Array(ary_opt.map(|ary| ary.into_iter().map(Value::enum_variant).collect()))
+                }
+                _ => {
+                    let msg = format!("Type {} is not yet supported in the PostgreSQL connector.", name);
+                    let kind = ErrorKind::conversion(msg.clone());
 
-                let mut builder = Error::builder(kind);
-                builder.set_original_message(msg);
+                    let mut builder = Error::builder(kind);
+                    builder.set_original_message(msg);
 
-                let error = sqlx::Error::ColumnDecode {
-                    index: format!("{}", i),
-                    source: Box::new(builder.build()),
-                };
+                    let error = sqlx::Error::ColumnDecode {
+                        index: format!("{}", i),
+                        source: Box::new(builder.build()),
+                    };
 
-                Err(error)?
-            }
+                    Err(error)?
+                }
+            },
         };
 
         result.push(value);

@@ -29,7 +29,11 @@ pub struct Sqlite {
 impl Sqlite {
     pub async fn new(file_path: &str) -> crate::Result<Sqlite> {
         let params = SqliteParams::try_from(file_path)?;
-        let opts = SqliteConnectOptions::new().statement_cache_capacity(params.statement_cache_size);
+
+        let opts = SqliteConnectOptions::new()
+            .statement_cache_capacity(params.statement_cache_size)
+            .create_if_missing(true);
+
         let conn = SqliteConnection::connect_with(&opts).await?;
 
         let connection = Mutex::new(conn);
@@ -57,14 +61,8 @@ impl Sqlite {
             .collect();
 
         if !databases.contains(db_name) {
-            let path = self.file_path.as_str();
-
-            if !std::path::Path::new(path).exists() {
-                std::fs::File::create(path)?;
-            }
-
             sqlx::query("ATTACH DATABASE ? AS ?")
-                .bind(path)
+                .bind(self.file_path.as_str())
                 .bind(db_name)
                 .execute(&mut *conn)
                 .await?;
