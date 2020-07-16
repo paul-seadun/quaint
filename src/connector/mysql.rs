@@ -8,7 +8,7 @@ pub use config::*;
 
 use async_trait::async_trait;
 use futures::{lock::Mutex, TryStreamExt};
-use sqlx::{Column, Connection, Done, MySqlConnection, Row};
+use sqlx::{Column, Connection, Done, Executor, MySqlConnection, Row};
 use std::time::Duration;
 
 use crate::{
@@ -128,7 +128,7 @@ impl Queryable for Mysql {
     async fn raw_cmd(&self, cmd: &str) -> crate::Result<()> {
         metrics::query_new("mysql.raw_cmd", cmd, Vec::new(), move |_| async move {
             let mut conn = self.connection.lock().await;
-            timeout(self.socket_timeout, sqlx::query(cmd).execute(&mut *conn)).await?;
+            timeout(self.socket_timeout, conn.execute(cmd)).await?;
             Ok(())
         })
         .await
@@ -264,6 +264,28 @@ VALUES (1, 'Joe', 27, 20000.00 );
             assert_eq!(row["age"].as_i64(), Some(35));
             assert_eq!(row["length"].as_f64(), Some(20.0));
         }
+    }
+
+    #[tokio::test]
+    async fn last_insert_id_works() {
+        let table = r#"
+            CREATE TABLE last_insert_id (id SERIAL PRIMARY KEY);
+        "#;
+
+        let connection = Quaint::new(&CONN_STR).await.unwrap();
+
+        connection
+            .query_raw("DROP TABLE IF EXISTS last_insert_id", vec![])
+            .await
+            .unwrap();
+        connection.query_raw(table, vec![]).await.unwrap();
+
+        let connection = Quaint::new(&CONN_STR).await.unwrap();
+
+        let insert = Insert::single_into("last_insert_id");
+        let res = connection.insert(insert.into()).await.unwrap();
+
+        assert!(res.last_insert_id().is_some());
     }
 
     #[tokio::test]

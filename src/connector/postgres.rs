@@ -124,7 +124,7 @@ impl Queryable for PostgreSql {
     async fn raw_cmd(&self, cmd: &str) -> crate::Result<()> {
         metrics::query("postgres.raw_cmd", cmd, &[], move || async move {
             let mut conn = self.connection.lock().await;
-            timeout(self.socket_timeout, sqlx::query(cmd).execute(&mut *conn)).await?;
+            timeout(self.socket_timeout, conn.execute(cmd)).await?;
             Ok(())
         })
         .await

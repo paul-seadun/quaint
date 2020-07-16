@@ -11,10 +11,13 @@ use rust_decimal::{
 #[cfg(feature = "chrono-0_4")]
 use sqlx::postgres::types::PgTimeTz;
 use sqlx::{
-    postgres::{types::PgMoney, PgArguments, PgRow, PgTypeInfo},
+    postgres::{
+        types::{PgAny, PgMoney},
+        PgArguments, PgRow, PgTypeInfo,
+    },
     query::Query,
     types::Json,
-    Column, Postgres, Row, Type, TypeInfo,
+    Column, Postgres, Row, TypeInfo,
 };
 use std::borrow::Cow;
 
@@ -82,7 +85,7 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
                 None => self.bind(Option::<IpNetwork>::None),
             },
             (Value::Text(c), _) => self.bind(c.map(|c| c.into_owned())),
-            (Value::Enum(c), _) => self.bind(c.map(|c| c.into_owned())),
+            (Value::Enum(c), _) => self.bind(c.map(|c| PgAny(c.into_owned()))),
 
             (Value::Bytes(c), _) => self.bind(c.map(|c| c.into_owned())),
             (Value::Boolean(b), _) => self.bind(b),
@@ -585,7 +588,7 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
 
         let value = match type_info.name() {
             // Singular types from here down, arrays after these.
-            "CHAR" => {
+            "\"CHAR\"" => {
                 let int_opt: Option<i8> = row.get_unchecked(i);
                 Value::Char(int_opt.map(|i| (i as u8) as char))
             }
@@ -692,7 +695,7 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
 
             // arrays from here on
             #[cfg(feature = "array")]
-            "CHAR[]" => {
+            "\"CHAR\"[]" => {
                 let ary_opt: Option<Vec<i8>> = row.get_unchecked(i);
 
                 let chars = ary_opt.map(|ary| {
@@ -877,11 +880,11 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
             }
 
             name => match type_info {
-                ti if <String as Type<Postgres>>::compatible(ti) => {
+                ti if ti.is_enum() => {
                     let string_opt: Option<String> = row.get_unchecked(i);
                     Value::Enum(string_opt.map(Cow::from))
                 }
-                ti if <Vec<String> as Type<Postgres>>::compatible(ti) => {
+                ti if ti.is_enum_array() => {
                     let ary_opt: Option<Vec<String>> = row.get_unchecked(i);
                     Value::Array(ary_opt.map(|ary| ary.into_iter().map(Value::enum_variant).collect()))
                 }

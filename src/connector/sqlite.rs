@@ -13,7 +13,7 @@ pub use config::*;
 use futures::{lock::Mutex, TryStreamExt};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteRow},
-    Column as _, Connection, Done, Row as _, SqliteConnection,
+    Column as _, Connection, Done, Executor, Row as _, SqliteConnection,
 };
 use std::{collections::HashSet, convert::TryFrom, time::Duration};
 
@@ -89,7 +89,7 @@ impl Queryable for Sqlite {
     }
 
     async fn insert(&self, q: Insert<'_>) -> crate::Result<ResultSet> {
-        let (sql, params) = visitor::Mysql::build(q)?;
+        let (sql, params) = visitor::Sqlite::build(q)?;
 
         metrics::query_new("sqlite.execute_raw", &sql, params, |params| async {
             let mut query = sqlx::query(&sql);
@@ -160,7 +160,7 @@ impl Queryable for Sqlite {
     async fn raw_cmd(&self, cmd: &str) -> crate::Result<()> {
         metrics::query_new("sqlite.raw_cmd", cmd, Vec::new(), move |_| async move {
             let mut conn = self.connection.lock().await;
-            timeout(self.socket_timeout, sqlx::query(cmd).execute(&mut *conn)).await?;
+            timeout(self.socket_timeout, conn.execute(cmd)).await?;
             Ok(())
         })
         .await
@@ -249,6 +249,26 @@ mod tests {
         let row = rows.get(0).unwrap();
 
         assert!(row["test"].is_null());
+    }
+
+    #[tokio::test(threaded_scheduler)]
+    async fn last_insert_id_works() {
+        let table = r#"
+            CREATE TABLE last_insert_id (id SERIAL PRIMARY KEY);
+        "#;
+
+        let connection = Sqlite::new("db/test.db").await.unwrap();
+
+        connection
+            .query_raw("DROP TABLE IF EXISTS last_insert_id", vec![])
+            .await
+            .unwrap();
+        connection.query_raw(table, vec![]).await.unwrap();
+
+        let insert = Insert::single_into("last_insert_id");
+        let res = connection.insert(insert.into()).await.unwrap();
+
+        assert!(res.last_insert_id().is_some());
     }
 
     #[tokio::test(threaded_scheduler)]
