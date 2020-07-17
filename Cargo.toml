@@ -47,7 +47,7 @@ postgresql = [
 pooled = ["mobc"]
 sqlite = ["sqlx/sqlite"]
 json-1 = ["serde_json", "base64"]
-uuid-0_8 = ["uuid"]
+uuid-0_8 = ["uuid", "sqlx/uuid"]
 chrono-0_4 = ["chrono"]
 mysql = ["sqlx/mysql"]
 mssql = ["tiberius", "uuid-0_8", "chrono-0_4"]
@@ -70,8 +70,6 @@ thiserror = "1.0"
 async-trait = "0.1"
 hex = "0.4"
 bigdecimal = "0.1"
-
-sqlx = { git = "https://github.com/pimeys/sqlx", branch = "work-branch", default_features = false, features = ["all-types"], optional = true}
 
 uuid = { version = "0.8", optional = true }
 chrono = { version = "0.4", optional = true }
@@ -100,3 +98,10 @@ tokio = { version = "0.2", features = ["rt-threaded", "macros"]}
 serde = { version = "1.0", features = ["derive"] }
 indoc = "0.3"
 names = "0.11"
+
+[dependencies.sqlx]
+path = "../sqlx"
+branch = "work-branch"
+default_features = false
+features = ["decimal", "json", "chrono", "ipnetwork", "bit-vec"]
+optional = true

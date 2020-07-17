@@ -133,7 +133,7 @@ impl Quaint {
         };
 
         let connection_info = Arc::new(ConnectionInfo::from_url(url_str)?);
-        Self::log_start(connection_info.sql_family(), 1);
+        Self::log_start(connection_info.sql_family());
 
         Ok(Self { inner, connection_info })
     }
@@ -143,14 +143,14 @@ impl Quaint {
         &self.connection_info
     }
 
-    fn log_start(family: SqlFamily, connection_limit: u32) {
+    fn log_start(family: SqlFamily) {
         #[cfg(not(feature = "tracing-log"))]
         {
-            info!("Starting a {} pool with {} connections.", family, connection_limit);
+            info!("Starting a single {} connection.", family);
         }
         #[cfg(feature = "tracing-log")]
         {
-            tracing::info!("Starting a {} pool with {} connections.", family, connection_limit);
+            tracing::info!("Starting a single {} connection.", family);
         }
     }
 }

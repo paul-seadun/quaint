@@ -332,6 +332,7 @@ impl<'a> Value<'a> {
 
     /// Transforms the `Value` to a `String` if it's text,
     /// otherwise `None`.
+
     pub fn into_string(self) -> Option<String> {
         match self {
             Value::Text(Some(cow)) => Some(cow.into_owned()),

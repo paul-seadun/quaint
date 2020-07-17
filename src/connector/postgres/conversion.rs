@@ -3,7 +3,6 @@ use crate::{
     connector::bind::Bind,
     error::{Error, ErrorKind},
 };
-use ipnetwork::IpNetwork;
 use rust_decimal::{
     prelude::{FromPrimitive, ToPrimitive},
     Decimal,
@@ -55,17 +54,28 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
                 }
                 None => self.bind(Option::<f64>::None),
             },
-            (Value::Real(d), Some("MONEY")) => match d {
-                Some(decimal) => self.bind(PgMoney::from_decimal(decimal, 2)),
-                None => self.bind(Option::<PgMoney>::None),
-            },
+            (Value::Real(d), Some("MONEY")) => self.bind(d.map(|r| PgMoney::from_decimal(r, 2))),
             (Value::Real(d), _) => self.bind(d),
 
+            #[cfg(feature = "uuid-0_8")]
+            (Value::Text(val), Some("UUID")) => match val {
+                Some(cow) => {
+                    let id: uuid::Uuid = cow.parse().map_err(|_| {
+                        let kind = ErrorKind::conversion(format!(
+                            "The given string '{}' could not be converted to UUID.",
+                            cow
+                        ));
+                        Error::builder(kind).build()
+                    })?;
+                    self.bind(id)
+                }
+                None => self.bind(Option::<uuid::Uuid>::None),
+            },
             // strings
             #[cfg(feature = "ipnetwork")]
             (Value::Text(c), t) if t == Some("INET") || t == Some("CIDR") => match c {
                 Some(s) => {
-                    let ip: IpNetwork = s.parse().map_err(|_| {
+                    let ip: sqlx::types::ipnetwork::IpNetwork = s.parse().map_err(|_| {
                         let msg = format!("Provided IP address ({}) not in the right format.", s);
                         let kind = ErrorKind::conversion(msg);
 
@@ -74,7 +84,7 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
 
                     self.bind(ip)
                 }
-                None => self.bind(Option::<IpNetwork>::None),
+                None => self.bind(Option::<sqlx::types::ipnetwork::IpNetwork>::None),
             },
             #[cfg(feature = "bit-vec")]
             (Value::Text(c), t) if t == Some("BIT") || t == Some("VARBIT") => match c {
@@ -82,7 +92,7 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
                     let bits = string_to_bits(&s)?;
                     self.bind(bits)
                 }
-                None => self.bind(Option::<IpNetwork>::None),
+                None => self.bind(Option::<sqlx::types::ipnetwork::IpNetwork>::None),
             },
             (Value::Text(c), _) => self.bind(c.map(|c| c.into_owned())),
             (Value::Enum(c), _) => self.bind(c.map(|c| PgAny(c.into_owned()))),
@@ -261,6 +271,52 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             },
 
             #[cfg(feature = "array")]
+            (Value::Array(ary_opt), Some("NUMERIC[]")) => match ary_opt {
+                Some(ary) => {
+                    let mut floats = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.as_decimal()) {
+                        match val {
+                            Some(float) => {
+                                floats.push(float);
+                            }
+                            None => {
+                                let msg = "Non-numeric parameter when storing a NUMERIC[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
+                    self.bind(floats)
+                }
+                None => self.bind(Option::<Vec<f64>>::None),
+            },
+
+            #[cfg(feature = "array")]
+            (Value::Array(ary_opt), Some("MONEY[]")) => match ary_opt {
+                Some(ary) => {
+                    let mut moneys = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.as_decimal()) {
+                        match val {
+                            Some(decimal) => moneys.push(PgMoney::from_decimal(decimal, 2)),
+                            None => {
+                                let msg = "Non-numeric parameter when storing a MONEY[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
+                    self.bind(moneys)
+                }
+                None => self.bind(Option::<Vec<f64>>::None),
+            },
+
+            #[cfg(feature = "array")]
             (Value::Array(ary_opt), Some("BOOL[]")) => match ary_opt {
                 Some(ary) => {
                     let mut boos = Vec::with_capacity(ary.len());
@@ -388,7 +444,11 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
                     for val in ary.into_iter().map(|v| v.as_datetime()) {
                         match val {
                             Some(val) => {
-                                let timetz = PgTimeTz::new(val.time(), chrono::FixedOffset::east(0));
+                                let timetz = PgTimeTz {
+                                    time: val.time(),
+                                    offset: chrono::FixedOffset::east(0),
+                                };
+
                                 vals.push(timetz);
                             }
                             None => {
@@ -406,8 +466,8 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
             },
 
             #[cfg(all(feature = "array", feature = "json-1"))]
-            (Value::Array(ary_opt), Some("JSON[]")) => match ary_opt {
-                Some(ary) => {
+            (Value::Array(ary_opt), t) if t == Some("JSON[]") || t == Some("JSONB[]") => match ary_opt {
+                Some(ary) if ary.first().map(|val| val.is_json()).unwrap_or(false) => {
                     let mut vals = Vec::with_capacity(ary.len());
 
                     for val in ary.into_iter().map(|v| v.into_json()) {
@@ -426,11 +486,36 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
 
                     self.bind(vals)
                 }
+                Some(ary) => {
+                    let mut vals = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.into_string()) {
+                        match val {
+                            Some(val) => {
+                                let json = serde_json::from_str(val.as_str()).map_err(|_| {
+                                    let msg = "Non-json parameter when storing a JSON[]";
+                                    let kind = ErrorKind::conversion(msg);
+
+                                    Error::builder(kind).build()
+                                })?;
+                                vals.push(Json(json));
+                            }
+                            None => {
+                                let msg = "Non-json parameter when storing a JSON[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
+                    self.bind(vals)
+                }
                 None => self.bind(Option::<Vec<Json<serde_json::Value>>>::None),
             },
 
             #[cfg(feature = "array")]
-            (Value::Array(ary_opt), Some("CHAR[]")) => match ary_opt {
+            (Value::Array(ary_opt), Some("\"CHAR\"[]")) => match ary_opt {
                 Some(ary) => {
                     let mut vals = Vec::with_capacity(ary.len());
 
@@ -455,7 +540,7 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
 
             #[cfg(any(feature = "array", feature = "uuid-0_8"))]
             (Value::Array(ary_opt), Some("UUID[]")) => match ary_opt {
-                Some(ary) => {
+                Some(ary) if ary.first().map(|v| v.is_uuid()).unwrap_or(false) => {
                     let mut vals = Vec::with_capacity(ary.len());
 
                     for val in ary.into_iter().map(|v| v.as_uuid()) {
@@ -474,11 +559,39 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
 
                     self.bind(vals)
                 }
+                Some(ary) => {
+                    let mut vals = Vec::with_capacity(ary.len());
+
+                    for val in ary.into_iter().map(|v| v.into_string()) {
+                        match val {
+                            Some(val) => {
+                                let id: uuid::Uuid = val.parse().map_err(|_| {
+                                    let kind = ErrorKind::conversion(format!(
+                                        "The given string '{}' could not be converted to UUID.",
+                                        val
+                                    ));
+                                    Error::builder(kind).build()
+                                })?;
+                                vals.push(id);
+                            }
+                            None => {
+                                let msg = "Non-uuid parameter when storing a UUID[]";
+                                let kind = ErrorKind::conversion(msg);
+
+                                Err(Error::builder(kind).build())?
+                            }
+                        }
+                    }
+
+                    self.bind(vals)
+                }
                 None => self.bind(Option::<Vec<uuid::Uuid>>::None),
             },
 
             #[cfg(feature = "array")]
-            (Value::Array(ary_opt), t) if t == Some("TEXT[]") || t == Some("VARCHAR[]") || t == Some("NAME[]") => {
+            (Value::Array(ary_opt), t)
+                if t == Some("TEXT[]") || t == Some("VARCHAR[]") || t == Some("NAME[]") || t == Some("CHAR[]") =>
+            {
                 match ary_opt {
                     Some(ary) => {
                         let mut vals = Vec::with_capacity(ary.len());
@@ -511,7 +624,7 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
                     for val in ary.into_iter() {
                         match val.into_string() {
                             Some(s) => {
-                                let ip: IpNetwork = s.parse().map_err(|_| {
+                                let ip: sqlx::types::ipnetwork::IpNetwork = s.parse().map_err(|_| {
                                     let msg = format!("Provided IP address ({}) not in the right format.", s);
                                     let kind = ErrorKind::conversion(msg);
 
@@ -531,7 +644,7 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
 
                     self.bind(ips)
                 }
-                None => self.bind(Option::<Vec<IpNetwork>>::None),
+                None => self.bind(Option::<Vec<sqlx::types::ipnetwork::IpNetwork>>::None),
             },
 
             (Value::Array(_), t) => match t {
@@ -555,7 +668,10 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
 
             #[cfg(feature = "chrono-0_4")]
             (Value::DateTime(dt), Some("TIMETZ")) => {
-                let time_tz = dt.map(|dt| PgTimeTz::new(dt.time(), chrono::FixedOffset::east(0)));
+                let time_tz = dt.map(|dt| PgTimeTz {
+                    time: dt.time(),
+                    offset: chrono::FixedOffset::east(0),
+                });
 
                 self.bind(time_tz)
             }
@@ -631,7 +747,7 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
                 Value::Real(f_opt.map(|f| Decimal::from_f64(f).unwrap()))
             }
 
-            "TEXT" | "VARCHAR" | "NAME" => {
+            "TEXT" | "VARCHAR" | "NAME" | "CHAR" => {
                 let string_opt: Option<String> = row.get_unchecked(i);
                 Value::Text(string_opt.map(Cow::from))
             }
@@ -644,7 +760,7 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
             "BOOL" => Value::Boolean(row.get_unchecked(i)),
 
             "INET" | "CIDR" => {
-                let ip_opt: Option<IpNetwork> = row.get_unchecked(i);
+                let ip_opt: Option<sqlx::types::ipnetwork::IpNetwork> = row.get_unchecked(i);
                 Value::Text(ip_opt.map(|ip| format!("{}", ip)).map(Cow::from))
             }
 
@@ -672,11 +788,9 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
                 let timetz_opt: Option<PgTimeTz> = row.get_unchecked(i);
 
                 let dt_opt = timetz_opt.map(|time_tz| {
-                    let (time, tz) = time_tz.into_parts();
-
-                    let dt = chrono::NaiveDate::from_ymd(1970, 1, 1).and_time(time);
+                    let dt = chrono::NaiveDate::from_ymd(1970, 1, 1).and_time(time_tz.time);
                     let dt = chrono::DateTime::<chrono::Utc>::from_utc(dt, chrono::Utc);
-                    let dt = dt.with_timezone(&tz);
+                    let dt = dt.with_timezone(&time_tz.offset);
 
                     chrono::DateTime::from_utc(dt.naive_utc(), chrono::Utc)
                 });
@@ -784,7 +898,7 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
             }
 
             #[cfg(feature = "array")]
-            "TEXT[]" | "VARCHAR[]" | "NAME[]" => {
+            "TEXT[]" | "VARCHAR[]" | "NAME[]" | "CHAR[]" => {
                 let ary_opt: Option<Vec<String>> = row.get_unchecked(i);
                 Value::Array(ary_opt.map(|ary| ary.into_iter().map(Value::text).collect()))
             }
@@ -797,7 +911,7 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
 
             #[cfg(feature = "array")]
             "CIDR[]" | "INET[]" => {
-                let ary_opt: Option<Vec<IpNetwork>> = row.get_unchecked(i);
+                let ary_opt: Option<Vec<sqlx::types::ipnetwork::IpNetwork>> = row.get_unchecked(i);
                 let strs = ary_opt.map(|ary| ary.into_iter().map(|ip| Value::text(format!("{}", ip))).collect());
 
                 Value::Array(strs)
@@ -840,11 +954,9 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
                 let dts = ary_opt.map(|ary| {
                     ary.into_iter()
                         .map(|time_tz| {
-                            let (time, tz) = time_tz.into_parts();
-
-                            let dt = chrono::NaiveDate::from_ymd(1970, 1, 1).and_time(time);
+                            let dt = chrono::NaiveDate::from_ymd(1970, 1, 1).and_time(time_tz.time);
                             let dt = chrono::DateTime::<chrono::Utc>::from_utc(dt, chrono::Utc);
-                            let dt = dt.with_timezone(&tz);
+                            let dt = dt.with_timezone(&time_tz.offset);
 
                             chrono::DateTime::from_utc(dt.naive_utc(), chrono::Utc)
                         })
