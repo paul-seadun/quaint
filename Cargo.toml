@@ -100,7 +100,7 @@ indoc = "0.3"
 names = "0.11"
 
 [dependencies.sqlx]
-path = "../sqlx"
+git = "https://github.com/pimeys/sqlx"
 branch = "work-branch"
 default_features = false
 features = ["decimal", "json", "chrono", "ipnetwork", "bit-vec"]
