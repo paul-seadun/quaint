@@ -108,12 +108,25 @@ impl Queryable for PostgreSql {
     async fn execute_raw(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<u64> {
         metrics::query_new("postgres.execute_raw", sql, params, |params| async move {
             let mut query = sqlx::query(sql);
-
-            for param in params.into_iter() {
-                query = query.bind_value(param, None)?;
-            }
-
             let mut conn = self.connection.lock().await;
+            let describe = timeout(self.socket_timeout, conn.describe(sql)).await?;
+
+            match describe.parameters() {
+                Some(Either::Left(type_infos)) => {
+                    let values = params.into_iter();
+                    let infos = type_infos.into_iter().map(Some);
+
+                    for (param, type_info) in values.zip(infos) {
+                        query = query.bind_value(param, type_info)?;
+                    }
+                }
+                _ => {
+                    for param in params.into_iter() {
+                        query = query.bind_value(param, None)?;
+                    }
+                }
+            };
+
             let done = query.execute(&mut *conn).await?;
 
             Ok(done.rows_affected())

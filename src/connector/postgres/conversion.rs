@@ -94,6 +94,9 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
                 }
                 None => self.bind(Option::<sqlx::types::ipnetwork::IpNetwork>::None),
             },
+            (Value::Text(c), _) if type_info.map(|ti| ti.is_enum()).unwrap_or(false) => {
+                self.bind(c.map(|c| PgAny(c.into_owned())))
+            }
             (Value::Text(c), _) => self.bind(c.map(|c| c.into_owned())),
             (Value::Enum(c), _) => self.bind(c.map(|c| PgAny(c.into_owned()))),
 
@@ -612,7 +615,7 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
 
                         self.bind(vals)
                     }
-                    None => self.bind(Option::<Vec<uuid::Uuid>>::None),
+                    None => self.bind(Option::<Vec<String>>::None),
                 }
             }
 
@@ -647,7 +650,30 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
                 None => self.bind(Option::<Vec<sqlx::types::ipnetwork::IpNetwork>>::None),
             },
 
-            (Value::Array(_), t) => match t {
+            #[cfg(feature = "array")]
+            (Value::Array(ary_opt), t) => match t {
+                _ if type_info.map(|ti| ti.is_enum_array()).unwrap_or(false) => match ary_opt {
+                    Some(ary) => {
+                        let mut vals = Vec::with_capacity(ary.len());
+
+                        for val in ary.into_iter().map(|v| v.into_string()) {
+                            match val {
+                                Some(val) => {
+                                    vals.push(PgAny(val));
+                                }
+                                None => {
+                                    let msg = "Non-string parameter when storing a string array";
+                                    let kind = ErrorKind::conversion(msg);
+
+                                    Err(Error::builder(kind).build())?
+                                }
+                            }
+                        }
+
+                        self.bind(PgAny(vals))
+                    }
+                    None => self.bind(Option::<Vec<String>>::None),
+                },
                 Some(t) => {
                     let msg = format!("Postgres type {} not supported yet", t);
                     let kind = ErrorKind::conversion(msg);
