@@ -42,30 +42,34 @@ impl<'a> MySql<'a> {
     }
 }
 
-#[macro_use]
-extern crate tokio;
-
 #[macro_export]
 macro_rules! test_type {
     ($name:ident($db:ident, $sql_type:literal, $($value:expr),+ $(,)?)) => {
         paste::item! {
-            #[tokio::test]
-            async fn [< test_type_ $name >] () -> quaint::Result<()> {
-                use crate::ast::*;
-                use crate::connector::Queryable;
+            #[test]
+            fn [< test_type_ $name >] () -> quaint::Result<()> {
+                use quaint::ast::*;
+                use quaint::connector::Queryable;
+                use tokio::runtime::Builder;
 
-                let mut setup = $db::new().await?;
-                let table = setup.create_table($sql_type).await?;
+                let mut rt = Builder::new().threaded_scheduler().enable_io().enable_time().build().unwrap();
 
-                $(
-                    let insert = Insert::single_into(&table).value("value", $value);
-                    setup.conn().insert(insert.into()).await?;
+                rt.block_on(async {
+                    let mut setup = $db::new().await?;
+                    let table = setup.create_table($sql_type).await?;
 
-                    let select = Select::from_table(&table).column("value").order_by("id".descend());
-                    let res = setup.conn().select(select).await?.into_single()?;
+                    $(
+                        let insert = Insert::single_into(&table).value("value", $value);
+                        setup.conn().insert(insert.into()).await?;
 
-                    assert_eq!(Some(&$value), res.at(0));
-                )+
+                        let select = Select::from_table(&table).column("value").order_by("id".descend());
+                        let res = setup.conn().select(select).await?.into_single()?;
+
+                        assert_eq!(Some(&$value), res.at(0));
+                    )+
+
+                    Result::<(), quaint::error::Error>::Ok(())
+                }).unwrap();
 
                 Ok(())
             }
