@@ -10,10 +10,7 @@ use rust_decimal::{
 #[cfg(feature = "chrono-0_4")]
 use sqlx::postgres::types::PgTimeTz;
 use sqlx::{
-    postgres::{
-        types::{PgAny, PgMoney},
-        PgArguments, PgRow, PgTypeInfo,
-    },
+    postgres::{types::PgMoney, PgArguments, PgRow, PgTypeInfo, PgTypeKind},
     query::Query,
     types::Json,
     Column, Postgres, Row, TypeInfo,
@@ -94,11 +91,15 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
                 }
                 None => self.bind(Option::<sqlx::types::ipnetwork::IpNetwork>::None),
             },
-            (Value::Text(c), _) if type_info.map(|ti| ti.is_enum()).unwrap_or(false) => {
-                self.bind(c.map(|c| PgAny(c.into_owned())))
+            (Value::Text(c), _)
+                if type_info
+                    .map(|ti| matches!(ti.kind(), PgTypeKind::Enum(_)))
+                    .unwrap_or(false) =>
+            {
+                self.bind(c.map(|c| c.into_owned()))
             }
             (Value::Text(c), _) => self.bind(c.map(|c| c.into_owned())),
-            (Value::Enum(c), _) => self.bind(c.map(|c| PgAny(c.into_owned()))),
+            (Value::Enum(c), _) => self.bind(c.map(|c| c.into_owned())),
 
             (Value::Bytes(c), _) => self.bind(c.map(|c| c.into_owned())),
             (Value::Boolean(b), _) => self.bind(b),
@@ -652,28 +653,33 @@ impl<'a> Bind<'a, Postgres> for Query<'a, Postgres, PgArguments> {
 
             #[cfg(feature = "array")]
             (Value::Array(ary_opt), t) => match t {
-                _ if type_info.map(|ti| ti.is_enum_array()).unwrap_or(false) => match ary_opt {
-                    Some(ary) => {
-                        let mut vals = Vec::with_capacity(ary.len());
+                _ if type_info
+                    .map(|ti| matches!(ti.kind(), PgTypeKind::Array(ti) if matches!(ti.kind(), PgTypeKind::Enum(_))))
+                    .unwrap_or(false) =>
+                {
+                    match ary_opt {
+                        Some(ary) => {
+                            let mut vals = Vec::with_capacity(ary.len());
 
-                        for val in ary.into_iter().map(|v| v.into_string()) {
-                            match val {
-                                Some(val) => {
-                                    vals.push(PgAny(val));
-                                }
-                                None => {
-                                    let msg = "Non-string parameter when storing a string array";
-                                    let kind = ErrorKind::conversion(msg);
+                            for val in ary.into_iter().map(|v| v.into_string()) {
+                                match val {
+                                    Some(val) => {
+                                        vals.push(val);
+                                    }
+                                    None => {
+                                        let msg = "Non-string parameter when storing a string array";
+                                        let kind = ErrorKind::conversion(msg);
 
-                                    Err(Error::builder(kind).build())?
+                                        Err(Error::builder(kind).build())?
+                                    }
                                 }
                             }
-                        }
 
-                        self.bind(PgAny(vals))
+                            self.bind(vals)
+                        }
+                        None => self.bind(Option::<Vec<String>>::None),
                     }
-                    None => self.bind(Option::<Vec<String>>::None),
-                },
+                }
                 Some(t) => {
                     let msg = format!("Postgres type {} not supported yet", t);
                     let kind = ErrorKind::conversion(msg);
@@ -1018,11 +1024,11 @@ pub fn map_row<'a>(row: PgRow) -> Result<Vec<Value<'a>>, sqlx::Error> {
             }
 
             name => match type_info {
-                ti if ti.is_enum() => {
+                ti if matches!(ti.kind(), PgTypeKind::Enum(_)) => {
                     let string_opt: Option<String> = row.get_unchecked(i);
                     Value::Enum(string_opt.map(Cow::from))
                 }
-                ti if ti.is_enum_array() => {
+                ti if matches!(ti.kind(), PgTypeKind::Array(ti) if matches!(ti.kind(), PgTypeKind::Enum(_))) => {
                     let ary_opt: Option<Vec<String>> = row.get_unchecked(i);
                     Value::Array(ary_opt.map(|ary| ary.into_iter().map(Value::enum_variant).collect()))
                 }

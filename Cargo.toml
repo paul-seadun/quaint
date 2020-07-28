@@ -98,10 +98,15 @@ tokio = { version = "0.2", features = ["rt-threaded", "macros"]}
 serde = { version = "1.0", features = ["derive"] }
 indoc = "0.3"
 names = "0.11"
+paste = "1.0"
 
 [dependencies.sqlx]
-git = "https://github.com/pimeys/sqlx"
-branch = "work-branch"
+git = "https://github.com/launchbadge/sqlx"
 default_features = false
 features = ["decimal", "json", "chrono", "ipnetwork", "bit-vec"]
 optional = true
+
+[[test]]
+name = "mysql-types"
+path = "tests/mysql/types.rs"
+required-features = [ "mysql" ]

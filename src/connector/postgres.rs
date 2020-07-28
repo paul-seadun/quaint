@@ -11,7 +11,7 @@ use async_trait::async_trait;
 pub use config::*;
 use either::Either;
 use futures::lock::Mutex;
-use sqlx::{Column as _, Connection, Done, Executor, PgConnection};
+use sqlx::{Column as _, Connection, Done, Executor, PgConnection, Statement};
 use std::time::Duration;
 
 /// A connector interface for the PostgreSQL database.
@@ -73,12 +73,12 @@ impl Queryable for PostgreSql {
     async fn query_raw(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<ResultSet> {
         metrics::query_new("postgres.query_raw", sql, params, |params| async move {
             let mut conn = self.connection.lock().await;
-            let describe = timeout(self.socket_timeout, conn.describe(sql)).await?;
-            let columns = describe.columns().into_iter().map(|c| c.name().to_string()).collect();
+            let stmt = timeout(self.socket_timeout, conn.prepare(sql)).await?;
+            let columns = stmt.columns().into_iter().map(|c| c.name().to_string()).collect();
 
-            let mut query = sqlx::query(sql);
+            let mut query = stmt.query();
 
-            match describe.parameters() {
+            match stmt.parameters() {
                 Some(Either::Left(type_infos)) => {
                     let values = params.into_iter();
                     let infos = type_infos.into_iter().map(Some);
@@ -107,11 +107,12 @@ impl Queryable for PostgreSql {
 
     async fn execute_raw(&self, sql: &str, params: Vec<Value<'_>>) -> crate::Result<u64> {
         metrics::query_new("postgres.execute_raw", sql, params, |params| async move {
-            let mut query = sqlx::query(sql);
             let mut conn = self.connection.lock().await;
-            let describe = timeout(self.socket_timeout, conn.describe(sql)).await?;
+            let stmt = timeout(self.socket_timeout, conn.prepare(sql)).await?;
 
-            match describe.parameters() {
+            let mut query = stmt.query();
+
+            match stmt.parameters() {
                 Some(Either::Left(type_infos)) => {
                     let values = params.into_iter();
                     let infos = type_infos.into_iter().map(Some);
